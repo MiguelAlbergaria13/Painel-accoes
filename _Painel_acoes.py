@@ -1,0 +1,4744 @@
+# python -m pip install yfinance openpyxl pywin32
+# Painel de ações europeias e americanas: preço atual, preço-alvo médio dos analistas, ranking pelo potencial,
+# máximos/mínimos e distância ao máximo da última semana, mês, 3 meses, ano e 3 anos. Fonte: Yahoo Finance.
+#
+# Uso: duplo clique em "Atualizar_painel.bat" (ou no botão ▶ ATUALIZAR dentro do Painel_acoes.xlsx,
+# que fica ativo depois de o script correr uma vez neste PC).
+# Em cada folha: "Ordenar por" (lista na linha 3) + ↕ ORDENAR reordena logo, sem descarregar nada; a ordem escolhida
+# também se aplica em cada ▶ ATUALIZAR.
+# Pontuação 1-5 (médias 100/200, valor justo e analistas), preços em euros (bolsa europeia) e 4 níveis por título (compra razoável, compra máxima,
+# venda razoável, venda mínima). Folha Procurar: procura títulos no Yahoo (nome/ticker, ou os mais significativos
+# de uma região) e ➕ ACRESCENTAR MARCADOS junta-os à folha Acrescentados; entram no painel na próxima ▶ ATUALIZAR.
+# O script atualiza o _Painel_acoes.xlsx (mesmo nome que o .py) na mesma pasta e abre-o. Se estiver aberto no Excel, fecha-o primeiro sozinho.
+import json
+import shutil
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+from datetime import datetime, timedelta
+
+from openpyxl import Workbook
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+PASTA = os.path.dirname(os.path.abspath(__file__))
+# o Excel tem o mesmo nome que este script (_Painel_acoes.py -> _Painel_acoes.xlsx); o .bat é o _Atualizar_painel.bat da pasta
+BASE = os.path.splitext(os.path.basename(os.path.abspath(__file__)))[0]
+FICHEIRO = os.path.join(PASTA, BASE + ".xlsx")
+
+
+def _bat():
+    """O .bat do painel: de preferência o que começa como este script (com "_" se o script tiver "_")."""
+    import glob
+    import re
+    pre = "_" if BASE.startswith("_") else ""
+    r = [g for g in glob.glob(os.path.join(PASTA, "*.bat")) if re.search(r"atualizar.*painel", os.path.basename(g), re.I)]
+    r.sort(key=lambda g: (not os.path.basename(g).startswith(pre) if pre else os.path.basename(g).startswith("_"), g))
+    return r[0] if r else os.path.join(PASTA, pre + "Atualizar_painel.bat")
+
+
+BAT = _bat()
+
+# (nome habitual, código habitual, ticker no Yahoo, bolsa) — acrescenta ou tira ações à vontade
+ACOES = [
+    ("EDP", "EDP", "EDP.LS", "Euronext Lisboa"),
+    ("EDP Renováveis", "EDPR", "EDPR.LS", "Euronext Lisboa"),
+    ("Galp Energia", "GALP", "GALP.LS", "Euronext Lisboa"),
+    ("Jerónimo Martins", "JMT", "JMT.LS", "Euronext Lisboa"),
+    ("Millennium BCP", "BCP", "BCP.LS", "Euronext Lisboa"),
+    ("NOS", "NOS", "NOS.LS", "Euronext Lisboa"),
+    ("The Navigator Company", "NVG", "NVG.LS", "Euronext Lisboa"),
+    ("Sonae", "SON", "SON.LS", "Euronext Lisboa"),
+    ("ASML", "ASML", "ASML.AS", "Euronext Amesterdão"),
+    ("ING Groep", "INGA", "INGA.AS", "Euronext Amesterdão"),
+    ("Prosus", "PRX", "PRX.AS", "Euronext Amesterdão"),
+    ("Adyen", "ADYEN", "ADYEN.AS", "Euronext Amesterdão"),
+    ("Ahold Delhaize", "AD", "AD.AS", "Euronext Amesterdão"),
+    ("Heineken", "HEIA", "HEIA.AS", "Euronext Amesterdão"),
+    ("Philips", "PHIA", "PHIA.AS", "Euronext Amesterdão"),
+    ("Wolters Kluwer", "WKL", "WKL.AS", "Euronext Amesterdão"),
+    ("Anheuser-Busch InBev", "ABI", "ABI.BR", "Euronext Bruxelas"),
+    ("LVMH", "MC", "MC.PA", "Euronext Paris"),
+    ("TotalEnergies", "TTE", "TTE.PA", "Euronext Paris"),
+    ("Hermès", "RMS", "RMS.PA", "Euronext Paris"),
+    ("L'Oréal", "OR", "OR.PA", "Euronext Paris"),
+    ("Schneider Electric", "SU", "SU.PA", "Euronext Paris"),
+    ("Sanofi", "SAN", "SAN.PA", "Euronext Paris"),
+    ("Airbus", "AIR", "AIR.PA", "Euronext Paris"),
+    ("Air Liquide", "AI", "AI.PA", "Euronext Paris"),
+    ("BNP Paribas", "BNP", "BNP.PA", "Euronext Paris"),
+    ("Safran", "SAF", "SAF.PA", "Euronext Paris"),
+    ("EssilorLuxottica", "EL", "EL.PA", "Euronext Paris"),
+    ("AXA", "CS", "CS.PA", "Euronext Paris"),
+    ("Vinci", "DG", "DG.PA", "Euronext Paris"),
+    ("Danone", "BN", "BN.PA", "Euronext Paris"),
+    ("Kering", "KER", "KER.PA", "Euronext Paris"),
+    ("Pernod Ricard", "RI", "RI.PA", "Euronext Paris"),
+    ("Saint-Gobain", "SGO", "SGO.PA", "Euronext Paris"),
+    ("SAP", "SAP", "SAP.DE", "Xetra"),
+    ("Siemens", "SIE", "SIE.DE", "Xetra"),
+    ("Allianz", "ALV", "ALV.DE", "Xetra"),
+    ("Deutsche Telekom", "DTE", "DTE.DE", "Xetra"),
+    ("Munich Re", "MUV2", "MUV2.DE", "Xetra"),
+    ("Mercedes-Benz Group", "MBG", "MBG.DE", "Xetra"),
+    ("BMW", "BMW", "BMW.DE", "Xetra"),
+    ("Volkswagen (pref.)", "VOW3", "VOW3.DE", "Xetra"),
+    ("BASF", "BAS", "BAS.DE", "Xetra"),
+    ("Bayer", "BAYN", "BAYN.DE", "Xetra"),
+    ("Deutsche Börse", "DB1", "DB1.DE", "Xetra"),
+    ("Infineon", "IFX", "IFX.DE", "Xetra"),
+    ("Adidas", "ADS", "ADS.DE", "Xetra"),
+    ("Deutsche Bank", "DBK", "DBK.DE", "Xetra"),
+    ("Rheinmetall", "RHM", "RHM.DE", "Xetra"),
+    ("Siemens Energy", "ENR", "ENR.DE", "Xetra"),
+    ("Banco Santander", "SAN", "SAN.MC", "Bolsa de Madrid"),
+    ("BBVA", "BBVA", "BBVA.MC", "Bolsa de Madrid"),
+    ("Iberdrola", "IBE", "IBE.MC", "Bolsa de Madrid"),
+    ("Inditex", "ITX", "ITX.MC", "Bolsa de Madrid"),
+    ("Telefónica", "TEF", "TEF.MC", "Bolsa de Madrid"),
+    ("UniCredit", "UCG", "UCG.MI", "Borsa Italiana"),
+    ("Intesa Sanpaolo", "ISP", "ISP.MI", "Borsa Italiana"),
+    ("Enel", "ENEL", "ENEL.MI", "Borsa Italiana"),
+    ("Eni", "ENI", "ENI.MI", "Borsa Italiana"),
+    ("Ferrari", "RACE", "RACE.MI", "Borsa Italiana"),
+    ("Stellantis", "STLAM", "STLAM.MI", "Borsa Italiana"),
+    ("Generali", "G", "G.MI", "Borsa Italiana"),
+    ("Shell", "SHEL", "SHEL.L", "Londres"),
+    ("AstraZeneca", "AZN", "AZN.L", "Londres"),
+    ("HSBC", "HSBA", "HSBA.L", "Londres"),
+    ("Unilever", "ULVR", "ULVR.L", "Londres"),
+    ("BP", "BP", "BP.L", "Londres"),
+    ("Rio Tinto", "RIO", "RIO.L", "Londres"),
+    ("GSK", "GSK", "GSK.L", "Londres"),
+    ("Barclays", "BARC", "BARC.L", "Londres"),
+    ("Lloyds Banking Group", "LLOY", "LLOY.L", "Londres"),
+    ("Rolls-Royce", "RR", "RR.L", "Londres"),
+    ("BAE Systems", "BA", "BA.L", "Londres"),
+    ("Diageo", "DGE", "DGE.L", "Londres"),
+    ("British American Tobacco", "BATS", "BATS.L", "Londres"),
+    ("RELX", "REL", "REL.L", "Londres"),
+    ("London Stock Exchange Group", "LSEG", "LSEG.L", "Londres"),
+    ("Glencore", "GLEN", "GLEN.L", "Londres"),
+    ("Nestlé", "NESN", "NESN.SW", "SIX Suíça"),
+    ("Roche", "ROP", "ROP.SW", "SIX Suíça"),   # desde 17/03/2026 (antes ROG)
+    ("Novartis", "NOVN", "NOVN.SW", "SIX Suíça"),
+    ("UBS", "UBSG", "UBSG.SW", "SIX Suíça"),
+    ("ABB", "ABBN", "ABBN.SW", "SIX Suíça"),
+    ("Zurich Insurance", "ZURN", "ZURN.SW", "SIX Suíça"),
+    ("Richemont", "CFR", "CFR.SW", "SIX Suíça"),
+    ("Novo Nordisk", "NOVO B", "NOVO-B.CO", "Copenhaga"),
+    ("Equinor", "EQNR", "EQNR.OL", "Oslo"),
+    ("Volvo", "VOLV B", "VOLV-B.ST", "Estocolmo"),
+    ("Atlas Copco", "ATCO A", "ATCO-A.ST", "Estocolmo"),
+    ("Ericsson", "ERIC B", "ERIC-B.ST", "Estocolmo"),
+    ("Nokia", "NOKIA", "NOKIA.HE", "Helsínquia"),
+    ("Nordea", "NDA FI", "NDA-FI.HE", "Helsínquia"),
+    ("Apple", "AAPL", "AAPL", "Nasdaq"),
+    ("Microsoft", "MSFT", "MSFT", "Nasdaq"),
+    ("NVIDIA", "NVDA", "NVDA", "Nasdaq"),
+    ("Amazon", "AMZN", "AMZN", "Nasdaq"),
+    ("Alphabet (Google)", "GOOGL", "GOOGL", "Nasdaq"),
+    ("Meta Platforms", "META", "META", "Nasdaq"),
+    ("Tesla", "TSLA", "TSLA", "Nasdaq"),
+    ("Broadcom", "AVGO", "AVGO", "Nasdaq"),
+    ("Berkshire Hathaway (B)", "BRK.B", "BRK-B", "NYSE"),
+    ("JPMorgan Chase", "JPM", "JPM", "NYSE"),
+    ("Visa", "V", "V", "NYSE"),
+    ("Mastercard", "MA", "MA", "NYSE"),
+    ("Eli Lilly", "LLY", "LLY", "NYSE"),
+    ("UnitedHealth", "UNH", "UNH", "NYSE"),
+    ("Exxon Mobil", "XOM", "XOM", "NYSE"),
+    ("Chevron", "CVX", "CVX", "NYSE"),
+    ("Johnson & Johnson", "JNJ", "JNJ", "NYSE"),
+    ("Procter & Gamble", "PG", "PG", "NYSE"),
+    ("Walmart", "WMT", "WMT", "NYSE"),
+    ("Costco", "COST", "COST", "Nasdaq"),
+    ("Home Depot", "HD", "HD", "NYSE"),
+    ("Oracle", "ORCL", "ORCL", "NYSE"),
+    ("Netflix", "NFLX", "NFLX", "Nasdaq"),
+    ("AMD", "AMD", "AMD", "Nasdaq"),
+    ("Bank of America", "BAC", "BAC", "NYSE"),
+    ("Coca-Cola", "KO", "KO", "NYSE"),
+    ("PepsiCo", "PEP", "PEP", "Nasdaq"),
+    ("Merck & Co.", "MRK", "MRK", "NYSE"),
+    ("AbbVie", "ABBV", "ABBV", "NYSE"),
+    ("Salesforce", "CRM", "CRM", "NYSE"),
+    ("Adobe", "ADBE", "ADBE", "Nasdaq"),
+    ("Cisco", "CSCO", "CSCO", "Nasdaq"),
+    ("Intel", "INTC", "INTC", "Nasdaq"),
+    ("Qualcomm", "QCOM", "QCOM", "Nasdaq"),
+    ("Palantir", "PLTR", "PLTR", "Nasdaq"),
+    ("Uber", "UBER", "UBER", "NYSE"),
+    ("Boeing", "BA", "BA", "NYSE"),
+    ("Walt Disney", "DIS", "DIS", "NYSE"),
+    ("Nike", "NKE", "NKE", "NYSE"),
+    ("McDonald's", "MCD", "MCD", "NYSE"),
+    ("IBM", "IBM", "IBM", "NYSE"),
+    ("Pfizer", "PFE", "PFE", "NYSE"),
+    ("Micron", "MU", "MU", "Nasdaq"),
+    ("Goldman Sachs", "GS", "GS", "NYSE"),
+    ("Caterpillar", "CAT", "CAT", "NYSE"),
+    ("Wells Fargo", "WFC", "WFC", "NYSE"),
+    ("Taiwan Semiconductor (ADR)", "TSM", "TSM", "NYSE"),
+]
+
+# ETFs UCITS (os que se compram na Europa, p. ex. na Trading 212) sobre os mesmos mercados.
+# Portugal não tem hoje nenhum ETF do PSI. Mesmo formato da lista de ações: acrescenta ou tira à vontade.
+ETFS = [
+    # ações (um por mercado, sem repetidos; de preferência a cotar em euros)
+    ("iShares STOXX Europe 600 (DE)", "EXSA", "EXSA.DE", "Xetra"),
+    ("iShares Core EURO STOXX 50 (DE)", "EXW1", "EXW1.DE", "Xetra"),
+    ("VanEck AEX (Países Baixos)", "TDT", "TDT.AS", "Euronext Amesterdão"),
+    ("Amundi CAC 40 (França)", "CAC", "CAC.PA", "Euronext Paris"),
+    ("iShares Core DAX (Alemanha)", "EXS1", "EXS1.DE", "Xetra"),
+    ("Amundi IBEX 35 (Espanha)", "LYXIB", "LYXIB.MC", "Bolsa de Madrid"),
+    ("iShares FTSE MIB (Itália)", "IMIB", "IMIB.MI", "Borsa Italiana"),
+    ("iShares Core FTSE 100 (Reino Unido)", "ISF", "ISF.L", "Londres"),
+    ("iShares SMI (Suíça)", "CSSMI", "CSSMI.SW", "SIX Suíça"),
+    ("XACT OMXS30 (Suécia)", "XACT OMXS30", "XACT-OMXS30.ST", "Estocolmo"),
+    ("iShares Core S&P 500 (Acc)", "SXR8", "SXR8.DE", "Xetra"),
+    ("iShares Nasdaq 100 (Acc)", "SXRV", "SXRV.DE", "Xetra"),
+    ("iShares Core MSCI EM IMI (emergentes)", "EMIM", "EMIM.AS", "Euronext Amesterdão"),
+    ("Vanguard FTSE All-World (Acc)", "VWCE", "VWCE.DE", "Xetra"),
+    # não são ações: nas crises a pontuação passa para os que estão a subir (testado: com obrigações e ouro na lista a
+    # queda máxima ficou em −21% em vez de −34%)
+    ("iShares Core Euro Government Bond (obrigações do Estado zona euro)", "IEGA", "IEGA.AS", "Euronext Amesterdão"),
+    ("iShares $ Treasury Bond 20+yr (obrigações EUA longo prazo)", "IDTL", "IDTL.L", "Londres"),
+    ("Xetra-Gold (ouro)", "4GLD", "4GLD.DE", "Xetra"),
+]
+
+# períodos analisados: (nome curto, dias de calendário)
+PERIODOS = [("semana", 7), ("mês", 30), ("3 meses", 91), ("ano", 365), ("3 anos", 1095)]
+NP = len(PERIODOS)
+
+# Preços de compra (σd = σ diário = σ mensal / √21; tendência = subida dos últimos 20 dias em σ, entre −2 e +2),
+# SEMPRE abaixo do preço atual (uma ordem limite acima do preço é executada logo):
+#   compra máxima (a ordem limite principal) = preço × exp(σd × (−0,75 + 0,25 × tendência)): ~0,75 σd abaixo (≈ −1,7%);
+#     em subida franca só ~0,25 σd abaixo (senão nunca é executada), em queda franca ~1,25 σd abaixo;
+#   compra razoável (trigger / ordem de oportunidade) = preço × exp(−1 σ mensal) (≈ −10%): só numa correção a sério.
+# Teste em 38 títulos, 2016–2026, dias com sinal de compra: −0,75 σd ajustado é executado ~58% das vezes em 3 dias e
+# ~71% em 7 (o anterior, −1 σd: 49% e 63%); quando não é executado, comprar logo ao preço do momento;
+# −1 σ mensal só ~6% em 5 dias, ~25% em 20 e ~45% em 60 (quando não é executado, o título sobe em média ~4% num mês).
+TETO_BASE, TETO_TEND = -0.75, 0.25
+RAZOAVEL_SIGMAS = 1.0
+
+# Colunas da tabela, por ordem: (chave, cabeçalho, largura, formato, grupo)
+#   formato: "txt", "preco" ou "pct";  grupo: decide a cor do cabeçalho
+COLS = [("det", "Detido (x)", 6, "txt", "det"), ("nome", "Empresa / ETF", 28, "txt", "id"),
+        ("qtd", "Nº de ações detidas", 8, "qtd", "det"), ("pcompra", "Preço médio de compra (por ação)", 10, "preco", "det"),
+        ("valor_eur", "Valor detido (€)", 10, "eur", "det"), ("lp_eur", "Lucro / prejuízo (€)", 10, "eur", "det"),
+        ("lp_pct", "Lucro / prejuízo (%)", 8, "pct", "det"),
+        ("tipo", "Tipo", 7, "txt", "id"), ("codigo", "Código", 9, "txt", "id"),
+        ("ticker", "Ticker Yahoo", 12, "txt", "id"), ("bolsa", "Bolsa", 34, "txt", "id"),
+        ("moeda", "Moeda", 7, "txt", "id"),
+        ("horario", "Horário da bolsa (hora de Lisboa)", 11, "txt", "id"),
+        ("preco_hora", "Preço de (sessão, hora de Lisboa)", 16, "txt", "id"), ("preco", "Preço atual", 12, "preco", "id"),
+        ("desde_ref", "Da data de referência até hoje (%)", 11, "pct", "teste"),
+        ("nota", "Nota global (75% pontuação + 25% qualidade e saúde)", 9, "nota", "global"),
+        ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
+        ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
+        ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
+        ("etf_desc", "Descrição do ETF", 40, "txt", "id"),
+        ("etf_comp", "Composição: maiores posições (peso; nota global)", 50, "txt", "id"),
+        ("qual", "Qualidade do negócio (0-5)", 8, "nota", "conselho"),
+        ("saude_n", "Saúde financeira (0-5)", 8, "nota", "conselho"),
+        ("sinal", "Médias 100/200: compra / venda próxima ou por inversão", 18, "txt", "conselho"),
+        ("saude", "Saúde financeira: detalhe (ALERTA = nota global no máx. 2,5)", 16, "txt", "conselho"),
+        ("lp_txt", "Longo prazo: subida média por ano (desde sempre; 5 anos; 1 ano)", 15, "txt", "conselho"),
+        ("div", "Dividendo anual por ação", 7, "preco", "fund"),
+        ("div_yield", "Dividend yield (%)", 7, "pct", "fund"),
+        ("payout", "Payout ratio (% do lucro)", 7, "pct", "fund"),
+        ("tend", "Médias 100/200: tendência desde", 13, "txt", "conselho"),
+        ("pe", "P/E (preço / lucro dos últimos 12 meses)", 10, "num1", "conselho"),
+        ("compra", "Compra razoável (trigger, ≈ −1σ ≈ −10%)", 13, "preco", "sugerido"),
+        ("compra_pct", "Compra razoável / atual (%)", 10, "pct", "sugerido"),
+        ("teto", "Compra máxima (ordem limite)", 13, "preco", "sugerido"),
+        ("teto_pct", "Compra máxima / atual (%)", 10, "pct", "sugerido"),
+        ("venda_alvo", "Venda razoável (objetivo de ganho)", 13, "preco", "venda"),
+        ("venda_alvo_pct", "Venda razoável / atual (%)", 10, "pct", "venda"),
+        ("venda_min", "Venda mínima aconselhável (rede de segurança)", 13, "preco", "venda"),
+        ("venda_min_pct", "Venda mínima / atual (%)", 10, "pct", "venda"),
+        ("coment", "Comentários (compra / venda próxima, o que falta para subir de nível)", 55, "txt", "conselho"),
+        ("mm100c", "Média 100 dias", 12, "preco", "conselho"),
+        ("gap5", "Média 100 / média 200 há 5 dias (%)", 11, "pct", "conselho"),
+        ("mm200c", "Média 200 dias", 13, "preco", "conselho"),
+        ("justo", "Valor justo (lucros × P/E habitual)", 14, "preco", "justo"),
+        ("justo_pct", "Valor justo / atual (%)", 12, "pct", "justo"),
+        ("alvo", "Preço-alvo médio (analistas)", 15, "preco", "id"),
+        ("pot", "Alvo / atual (%)", 12, "pct", "id"),
+        ("rec", "Recomendação", 13, "txt", "id"),
+        ("var1d", "Variação último dia (%)", 11, "pct", "mov"), ("var1m", "Variação último mês (%)", 13, "pct", "mov"),
+        ("valor_tx", "Valor transacionado/dia, média 3 meses (M €)", 14, "num1", "vol"),
+        ("volume", "Volume/dia, média 3 meses (nº de títulos)", 13, "int", "vol"),
+        ("cap", "Capitalização (mil M €)", 12, "num1", "vol"),
+        ("sigma", "Volatilidade mensal σ (%)", 11, "pct", "teste"),
+        ("t_m200", "Último ano: seguir o sinal (%)", 12, "pct", "teste"),
+        ("t_hold", "Último ano: manter (%)", 13, "pct", "teste")]
+for i, (p, _) in enumerate(PERIODOS):   # posição atual face ao máximo + oscilação em torno da média
+    COLS += [(f"dist{i}", f"Distância ao máx. {p} (%)", 13, "pct", f"osc{i}"),
+             (f"cima{i}", f"Oscilação acima da média {p} (%)", 13, "pct", f"osc{i}"),
+             (f"baixo{i}", f"Oscilação abaixo da média {p} (%)", 13, "pct", f"osc{i}")]
+COLS += [("nanal", "Nº de analistas", 10, "txt", "id")]
+for i, (p, _) in enumerate(PERIODOS):
+    COLS += [(f"max{i}", f"Máx. {p}", 13, "preco", f"px{i}"), (f"min{i}", f"Mín. {p}", 13, "preco", f"px{i}"),
+             (f"med{i}", f"Média {p}", 13, "preco", f"px{i}")]
+COLS += [("notas", "Notas", 30, "txt", "id")]
+COLS += [("ppo", "PPO 12/26 (%)", 10, "pct", "ind"), ("ppo_sinal", "PPO: linha de sinal 9 (%)", 13, "pct", "ind"),
+         ("ppo_hist", "PPO: histograma (%)", 13, "pct", "ind"),
+         ("ppo_dh", "Histograma: variação em 5 dias (%)", 11, "pct", "ind"),
+         ("rsi", "RSI 14 dias", 8, "num1", "ind"), ("mm200", "Média 200 dias (indicador)", 11, "preco", "ind"),
+         ("dist200", "Preço / média 200 dias (%)", 13, "pct", "ind"),
+         ("mom12", "Momentum 12 meses, sem o último (%)", 12, "pct", "ind"),
+         ("tend20", "Tendência 20 dias (subida em σ, −2 a +2)", 11, "num1", "ind"),
+         ("lp", "Longo prazo: subida média por ano (%)", 11, "pct", "ind"),
+         ("mom6", "Subida 6 meses (%)", 11, "pct", "ind"), ("ref6m", "Preço há 6 meses", 11, "preco", "ind"),
+         ("roic", "ROIC (EBIT após impostos / capital investido) (%)", 12, "pct", "fund"),
+         ("gpa", "Lucro bruto / ativo total (%)", 11, "pct", "fund"),
+         ("fcf_lucro", "FCF / lucro líquido (×)", 10, "num1", "fund"),
+         ("fcf_yield", "FCF yield (FCF / capitalização) (%)", 11, "pct", "fund"),
+         ("ev_ebitda", "EV / EBITDA (×)", 10, "num1", "fund"),
+         ("divl_ebitda", "Dívida líquida / EBITDA (×)", 11, "num1", "fund"),
+         ("ebit_juros", "EBIT / juros (cobertura) (×)", 11, "num1", "fund")]
+# preços: ao lado de cada um, o mesmo valor noutra moeda (letra 9, entre parênteses): em dólares se a cotação for em
+# euros, em euros nas outras moedas
+ALT_KEYS = ("preco", "compra", "teto", "venda_alvo", "venda_min", "mm100c", "mm200c", "justo", "alvo", "div")
+NEGRITO = ("preco", "compra", "teto", "venda_alvo", "venda_min")
+_cols = []
+for _c in COLS:
+    _cols.append(_c)
+    if _c[0] in ALT_KEYS:
+        _cols.append((_c[0] + "_alt", _c[1] + " (noutra moeda)", 8, "alt", _c[4]))
+COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
+                ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind")]
+OCULTAS = ("moeda_alt", "fx_alt")
+SIMBOLO = {"EUR": "€", "USD": "$", "GBP": "£", "GBp": "p", "CHF": "CHF", "JPY": "¥", "DKK": "DKK", "SEK": "SEK",
+           "NOK": "NOK", "CAD": "C$", "AUD": "A$", "HKD": "HK$", "ARS": "ARS", "BRL": "R$", "TWD": "NT$", "KRW": "₩",
+           "CNY": "CN¥", "INR": "₹", "PLN": "zł", "ZAc": "ZAc", "ILA": "ILA", "MXN": "MX$", "SGD": "S$"}
+SEM_DECIMAIS = ("JPY", "KRW", "TWD")
+
+
+def fmt_moeda(m, alt=False):
+    """Formato do Excel com o símbolo à esquerda e o número à direita (p. ex. €   123.00); alt: entre parênteses."""
+    sim = SIMBOLO.get(m, m or "")
+    num = "#,##0" if m in SEM_DECIMAIS else "#,##0.00"
+    return f'"({sim}"* {num}")"' if alt else f'"{sim}"* {num}'
+
+
+def moeda_alt(m):
+    return "USD" if m == "EUR" else "EUR"
+
+
+def preencher_alt(d):
+    """Valores noutra moeda (preço × câmbio guardado em fx_alt)."""
+    fx = d.get("fx_alt") if isinstance(d.get("fx_alt"), (int, float)) else None
+    for k in ALT_KEYS:
+        v = d.get(k)
+        d[k + "_alt"] = v * fx if (fx and isinstance(v, (int, float))) else None
+
+
+def cambios_alt(linhas):
+    """Câmbio de cada linha para a moeda alternativa (um pedido ao Yahoo para todas as moedas)."""
+    moedas = {txt(d.get("moeda")) for d in linhas if txt(d.get("moeda"))}
+    try:
+        tx = taxas_eur(moedas | {"USD"})
+    except Exception:
+        tx = {}
+    for d in linhas:
+        m = txt(d.get("moeda"))
+        if m:
+            ma = moeda_alt(m)
+            fb, fa = (tx.get(m) or (None, None))[1], (tx.get(ma) or (None, None))[0]
+            if fb and fa:
+                d["moeda_alt"], d["fx_alt"] = ma, fb / fa
+        preencher_alt(d)
+
+
+assert len({h for _, h, *_ in COLS}) == len(COLS), "há dois cabeçalhos iguais em COLS"
+COL = {k: j for j, (k, *_) in enumerate(COLS, start=1)}   # chave -> nº da coluna (1 = A)
+# cabeçalhos que mudam na folha ETFs (a mesma coluna, outro texto)
+CAB_ETF = {"nota": "Nota global (75% pontuação + 25% ações do ETF)"}
+CAB_RANK = [h for _, h, *_ in COLS]
+CAB_ETFS = [CAB_ETF.get(k, h) for k, h, *_ in COLS]
+SO_ETF = ("etf_acoes", "etf_desc", "etf_comp")      # colunas só dos ETFs (escondidas na folha Ranking)
+
+
+def cab_ok(cab):
+    """O cabeçalho lido do Excel é o desta versão (folha Ranking ou ETFs)?"""
+    return list(cab) in (CAB_RANK, CAB_ETFS)
+L0 = 6    # linha do cabeçalho da tabela (linhas 3-4: botões e Ordenar por)
+L0_ANTIGO = 11   # versões anteriores (com a secção ▶ GERAR): para aproveitar o "Ordenar por" ao atualizar
+AC_L0 = 5   # linha do cabeçalho da folha Acrescentados
+
+# "Ordenar por" (lista na linha 3 de cada folha): (texto, chave, maior primeiro?)
+REC_ORDEM = {"strong_buy": 0, "buy": 1, "hold": 2, "underperform": 3, "sell": 4, "strong_sell": 5}
+CRITERIOS_ORD = [
+    ("Nota global (5 → 0)", "nota", True),
+    ("Pontuação (5 → 1)", "pont", True),
+    ("Detidos (x) primeiro", "det", True),
+    ("Analistas (alvo / preço)", "pot", True),
+    ("Valor justo (justo / preço)", "justo_pct", True),
+    ("Qualidade (0-5)", "qual", True),
+    ("Valor transacionado/dia", "valor_tx", True),
+    ("Volume (nº de títulos/dia)", "volume", True),
+    ("Capitalização", "cap", True),
+    ("Subida no último dia", "var1d", True),
+    ("Subida no último mês", "var1m", True),
+    ("Recomendação", "rec", False),
+    ("Mais abaixo do máx. da semana", "dist0", False),
+]
+ORD_PADRAO = {1: CRITERIOS_ORD[0][0], 2: CRITERIOS_ORD[0][0]}    # as duas folhas: pela nota global
+C_ORD = "E3"   # lista "Ordenar por" (C3:D3 = texto, E3:H3 = lista, I3:J3 = botão ↕ ORDENAR, E4 = estado)
+C_ORD_EST = "E4"
+C_PRECOS_EST = "K4"   # estado do ↻ PREÇOS
+MARGEM_200 = 0.03     # regra da média de 200 dias: sai quando o fecho fica 3% abaixo dela; volta a entrar quando fecha acima
+
+
+
+def desempate(d):
+    """Desempate dentro da mesma pontuação (tuplo para sorted: menor = primeiro).
+    Ações: 1.º a qualidade (0-5), 2.º a média do potencial dos analistas e do valor justo (se só houver um, esse).
+    ETFs: subida dos últimos 6 meses (momentum)."""
+    num = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    if txt(d.get("tipo")) == "ETF":
+        m = num("mom6")
+        return (-(m if m is not None else -9),)
+    q = num("qual")
+    v = [x for x in (num("pot"), num("justo_pct")) if x is not None]
+    return (-(q if q is not None else -1), -(sum(v) / len(v) if v else -9))
+
+
+def chave_ordem(criterio):
+    """Função de ordenação (para sorted) de um critério; os valores em falta ficam no fim."""
+    _, k, desc = next((c for c in CRITERIOS_ORD if c[0] == criterio), CRITERIOS_ORD[0])
+
+    def f(d):
+        v = d.get(k)
+        p = d.get("pont")
+        p = p if isinstance(p, (int, float)) else 0
+        nt = d.get("nota") if isinstance(d.get("nota"), (int, float)) else p
+        if k == "det":                  # detidos primeiro; dentro de cada grupo, pela nota global e pelo desempate
+            return (not e_detido(v), -nt, -p) + desempate(d)
+        if k == "nota":                 # empate: pontuação, depois desempate
+            return (not isinstance(v, (int, float)), -(v or 0), -p) + desempate(d)
+        if k == "pont":                 # empate: desempate (ações: analistas + valor justo; ETFs: 6 meses)
+            return (not isinstance(v, (int, float)), -(v or 0)) + desempate(d)
+        if k == "rec":
+            r = REC_ORDEM.get(str(v or "").strip().lower())
+            return (r is None, r if r is not None else 0) + desempate(d)
+        if not isinstance(v, (int, float)):
+            return (True, 0)
+        return (False, -v if desc else v)
+    return f
+PROTOCOLO = "painelacoes"   # link do botão ATUALIZAR (registado no Windows pelo próprio script)
+
+VERDE, BRANCO, VERMELHO = "63BE7B", "FFFFFF", "F8696B"
+
+
+def cor_cabecalho(grupo):
+    if grupo == "ind":
+        return "4B2070"
+    if grupo == "conselho":
+        return "C55A11"
+    if grupo.startswith("osc"):   # verdes, alternando o tom de período para período
+        return "375623" if int(grupo[3:]) % 2 == 0 else "548235"
+    if grupo.startswith("px"):    # azuis, alternando
+        return "2E75B6" if int(grupo[2:]) % 2 == 0 else "1F5C99"
+    if grupo == "compra":
+        return "00A050"
+    if grupo == "sugerido":
+        return "7030A0"
+    if grupo == "det":
+        return "C00000"
+    if grupo == "venda":
+        return "C55A11"
+    if grupo == "justo":
+        return "203864"
+    if grupo == "venda":
+        return "C55A11"
+    if grupo == "stop":
+        return "C00000"
+    if grupo == "teste":
+        return "7F7F7F"
+    if grupo == "mov":
+        return "806000"
+    if grupo == "global":
+        return "000000"
+    if grupo == "fund":
+        return "385723"
+    if grupo == "vol":
+        return "404040"
+    return "1F3864"
+
+
+# versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
+VERSAO, DATA_VERSAO = "V011", "14/11/2026"
+TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
+
+
+def marcar_versao(ws):
+    """Versão bem visível no canto superior esquerdo (A1:B1, a cor); o título passa para C1."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    tit = ws["A1"].value
+    if tit and tit != TXT_VERSAO:
+        ws["C1"] = tit
+        ws["C1"].font = Font(size=14, bold=True)
+    ws.merge_cells("A1:B1")
+    c = ws["A1"]
+    c.value = TXT_VERSAO
+    c.font = Font(size=12, bold=True, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor="7030A0")
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    if (ws.column_dimensions["A"].width or 8) + (ws.column_dimensions["B"].width or 8) < 18:
+        ws.column_dimensions["B"].width = 18 - (ws.column_dimensions["A"].width or 8)
+    ws.row_dimensions[1].height = 22
+
+
+def carteira(d):
+    """Valor detido, lucro/prejuízo (em euros, ao câmbio de hoje) e % (na moeda do título), a partir do nº de ações
+    e do preço médio de compra (por ação, na moeda da cotação)."""
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else qtd_detida(v)
+    q = num(d.get("qtd")) or qtd_detida(d.get("det"))
+    pc, p = num(d.get("pcompra")), d.get("preco")
+    d["valor_eur"] = d["lp_eur"] = d["lp_pct"] = None
+    if q:
+        d["qtd"] = q
+        if not e_detido(d.get("det")) or qtd_detida(d.get("det")) is not None:
+            d["det"] = "x"                  # o nº de ações passa da coluna A para a sua coluna
+    if not q or not isinstance(p, (int, float)):
+        return
+    fx = 1.0 if txt(d.get("moeda")) == "EUR" else (d.get("fx_alt") if txt(d.get("moeda_alt")) == "EUR" else None)
+    if not isinstance(fx, (int, float)):
+        return
+    d["valor_eur"] = round(q * p * fx, 2)
+    if pc:
+        d["lp_eur"] = round(q * (p - pc) * fx, 2)
+        d["lp_pct"] = p / pc - 1
+
+
+def aplicar_compra(d, qtd, pcompra):
+    """Nº de ações e preço de compra guardados (por ticker; por nome se não for 'todas as bolsas')."""
+    chaves = [txt(d.get("ticker")).upper()] + ([] if modo_atual() == "todos" else [txt(d.get("nome"))])
+    if not isinstance(d.get("qtd"), (int, float)):
+        q = next((qtd[k] for k in chaves if k in qtd), None)
+        if q is not None:
+            d["qtd"] = q
+    if not isinstance(d.get("pcompra"), (int, float)):
+        pc = next((pcompra[k] for k in chaves if k in pcompra), None)
+        if pc is not None:
+            d["pcompra"] = pc
+
+
+def marca_detido(d, det, qtd):
+    """O nº de ações (se o souber) ou x, para um título que tens; None se não o tens."""
+    chaves = [txt(d.get("ticker")).upper()] + ([] if modo_atual() == "todos" else [txt(d.get("nome"))])
+    for k in chaves:                    # em "todas as bolsas" o nº de ações fica só na listagem onde o escreveste
+        if k in qtd:
+            return qtd[k]
+    return "x" if (txt(d.get("nome")) in det or txt(d.get("ticker")).upper() in det) else None
+
+
+def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), estado=None):
+    criterios = {**ORD_PADRAO, **(criterios or {})}
+    estado = estado or {}
+    det = estado.get("det") or set()
+    at_a, at_e = atualizado if isinstance(atualizado, tuple) else (atualizado, atualizado)
+    cambios_alt(list(linhas) + list(etfs))
+    for d in list(linhas) + list(etfs):
+        d["horario"] = horario_bolsa(d.get("ticker")) or d.get("horario")                 # x nos títulos que tens (lidos do painel anterior)
+        if not e_detido(d.get("det")):
+            d["det"] = marca_detido(d, det, estado.get("qtd") or {})
+        aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
+        carteira(d)
+    wb = Workbook()
+    folha(wb.active, "Ranking", "Painel de ações: nota global (sinal das médias, valor justo e analistas + qualidade e saúde financeira)",
+          sorted(linhas, key=chave_ordem(criterios[1])), at_a, True, criterios[1], 1, estado)
+    folha(wb.create_sheet(), "ETFs", "Painel de ETFs: nota global (sinal das médias + nota das ações que os compõem)",
+          sorted(etfs, key=chave_ordem(criterios[2])), at_e, False, criterios[2], 2, estado)
+    for pf in (FOLHA_PROC, FOLHA_PROC_ETF):
+        folha_procurar(wb, pf)
+        p = wb[NOME_PROC[pf]]
+        for cel, v in estado.get("proc", {}).get(pf, {}).items():
+            if v not in (None, ""):
+                p[cel] = v
+    folha_acrescentados(wb, acrescentados)
+    wb.active = 0
+    for ws in wb.worksheets:
+        marcar_versao(ws)
+    return wb
+
+
+def botao(ws, cel, texto, link, cor, borda_cor, tamanho=12):
+    ws[cel] = texto
+    ws[cel].hyperlink = link
+    ws[cel].font = Font(bold=True, color="FFFFFF", size=tamanho)
+    ws[cel].fill = PatternFill("solid", fgColor=cor)
+    ws[cel].alignment = Alignment(horizontal="center", vertical="center")
+    ws[cel].border = Border(*(Side(style="medium", color=borda_cor),) * 4)
+
+
+def largura(w, fmt):
+    """Largura da coluna: as de números ficam estreitas (cabeçalho em letra 8, em várias linhas)."""
+    if fmt in ("pct", "num1", "int", "nota", "pont", "alt", "qtd"):
+        return min(w, 8)
+    if fmt == "preco":                   # símbolo da moeda à esquerda + número
+        return 10
+    return w
+
+
+def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=None):
+    from openpyxl.worksheet.datavalidation import DataValidation
+    estado = estado or {}
+    borda = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
+    amarelo = PatternFill("solid", fgColor="FFF2CC")
+    lista = lambda itens: '"' + ",".join(itens) + '"'     # opções escritas na própria lista (≤ 255 caracteres)
+
+    def campo(intervalo, valor, fundo=amarelo):
+        ws.merge_cells(intervalo)
+        ini = intervalo.split(":")[0]
+        ws[ini] = valor
+        for linha in ws[intervalo]:
+            for c in linha:
+                c.fill, c.border = fundo, borda
+        ws[ini].alignment = Alignment(vertical="center")
+
+    def texto(intervalo, valor):
+        ws.merge_cells(intervalo)
+        ini = intervalo.split(":")[0]
+        ws[ini] = valor
+        ws[ini].font = Font(bold=True)
+        ws[ini].alignment = Alignment(horizontal="right", vertical="center")
+
+    def lista_val(cel, itens):
+        dv = DataValidation(type="list", formula1=lista(itens), allow_blank=False)
+        dv.error, dv.errorTitle = "Escolhe um valor da lista.", "Valor inválido"
+        ws.add_data_validation(dv)
+        dv.add(cel)
+
+    ws.title = nome
+    ws["A1"] = titulo
+    ws["A1"].font = Font(size=14, bold=True)
+    ws["A2"] = ("Coluna A: x nos títulos que tens; colunas C e D: nº de ações e preço médio de compra por ação (na moeda da "
+                "cotação) -> valor detido e lucro/prejuízo, também na página do telemóvel. "
+                "▶ ATUALIZAR (aceita os avisos do Excel/Windows): atualiza só esta folha (" + ("ações" if ranking else "ETFs")
+                + "; a outra fica como estava); o Excel fecha, os dados são atualizados e o painel "
+                "volta a abrir; ↻ PREÇOS atualiza só os preços (segundos). \"Ordenar por\" + ↕ ORDENAR reordena logo (sem descarregar nada) e também se aplica em cada "
+                "atualização. Por omissão ordena pela NOTA GLOBAL (coluna K): " + (
+                    "75% pontuação + 12,5% qualidade + 12,5% saúde; no máx. 2,5 com saúde em alerta ou longo prazo fraco. "
+                    if ranking else "75% pontuação + 25% média das notas globais das ações do ETF (pesadas pelo peso de "
+                    "cada uma; as que faltam na folha Ranking são lá acrescentadas); no máx. 2,5 com longo prazo fraco. ")
+                + ("" if ranking else "Os ETFs não têm preço-alvo nem valor justo (esses critérios deixam-nos no fim). ")
+                + f"Se os botões não responderem, corre uma vez o {os.path.basename(BAT)} (isso ativa-os neste PC).")
+    ws["A2"].font = Font(italic=True, size=9, color="595959")
+    # linha 3: ▶ ATUALIZAR · Ordenar por · ↕ ORDENAR · data
+    ws.merge_cells("A3:B3")
+    botao(ws, "A3", "▶ ATUALIZAR " + ("AÇÕES" if ranking else "ETFs"),
+          f"{PROTOCOLO}://atualizar/{'acoes' if ranking else 'etfs'}", "00A050", "006E37", 11)
+    texto("C3:D3", "Ordenar por:")
+    campo("E3:H3", criterio)
+    lista_val(C_ORD, [c[0] for c in CRITERIOS_ORD])
+    ws.merge_cells("I3:J3")
+    botao(ws, "I3", "↕ ORDENAR", f"{PROTOCOLO}://ordenar/{idx}", "2E75B6", "1F4E79")
+    ws["K3"] = atualizado
+    ws["K3"].font = Font(italic=True, color="595959")
+    ws.merge_cells("A4:B4")
+    botao(ws, "A4", "↻ PREÇOS (rápido)", f"{PROTOCOLO}://precos", "BF8F00", "7F6000", 11)
+    for ini, fim, rot, m, cor, esc in (("A", "B", "◎ LISTA BASE", "base", "7F7F7F", "595959"),
+                                       ("C", "D", "€ PRIVILEGIAR EUR", "eur", "2E75B6", "1F4E79"),
+                                       ("E", "E", "$ PRIV. EUA", "eua", "C55A11", "843C0C"),
+                                       ("F", "F", "⊕ TODAS AS BOLSAS", "todos", "548235", "375623")):
+        if fim != ini:
+            ws.merge_cells(f"{ini}5:{fim}5")
+        botao(ws, f"{ini}5", rot + ("  ✓" if m == modo_atual() else ""), f"{PROTOCOLO}://modo/{m}", cor, esc, 9)
+    ws["C4"] = "Longo prazo mín./ano:"
+    ws["C4"].font = Font(bold=True, size=9)
+    ws["C4"].alignment = Alignment(horizontal="right", vertical="center")
+    ws[C_LPMIN] = (estado or {}).get("lp_min", LP_MIN)
+    ws[C_LPMIN].number_format = "0.0%"
+    ws[C_LPMIN].fill = PatternFill("solid", fgColor="FFF2CC")
+    ws[C_LPMIN].border = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
+    ws[C_LPMIN].alignment = Alignment(horizontal="center", vertical="center")
+    ws["G5"] = "Situação em:"
+    ws["G5"].font = Font(bold=True, size=10)
+    ws["G5"].alignment = Alignment(horizontal="right")
+    ws.merge_cells("H5:I5")
+    est = estado or {}
+    ws[C_REF] = est.get("ref_escolha") or "Atual"
+    ws[C_DATAREF] = ler_data(est.get("ref_data")) or (est.get("ref_data") or None)
+    for c in (C_REF, "I5", C_DATAREF):
+        ws[c].fill = PatternFill("solid", fgColor="FFF2CC")
+        ws[c].border = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
+    ws[C_DATAREF].number_format = "dd/mm/yyyy"
+    dvr = DataValidation(type="list", formula1='"' + ",".join(REFS) + '"', allow_blank=False)
+    ws.add_data_validation(dvr)
+    dvr.add(C_REF)
+    ws["K5"] = ("escolhe e carrega em ▶ ATUALIZAR: preços, médias, sinais e níveis dessa data (analistas e valor justo "
+                "de hoje); a coluna \"Da data de referência até hoje\" mostra o que cada título fez desde então.")
+    ws["K5"].font = Font(italic=True, size=9, color="595959")
+    ws[C_PRECOS_EST] = "↻ PREÇOS: só os preços e as contas que dependem deles (segundos); ▶ ATUALIZAR: tudo (3 a 5 min)."
+    ws[C_PRECOS_EST].font = Font(italic=True, size=9, color="595959")
+    ws[C_ORD_EST].font = Font(italic=True, size=9, color="595959")
+
+    let = get_column_letter
+    cabs = CAB_RANK if ranking else CAB_ETFS
+    larguras = [largura(w, fmt) for (_, _, w, fmt, _) in COLS]
+    for j, ((k, _, w, fmt, grupo), h) in enumerate(zip(COLS, cabs), start=1):
+        c = ws.cell(L0, j, h)
+        c.font = Font(bold=True, color="FFFFFF", size=8)
+        c.fill = PatternFill("solid", fgColor=cor_cabecalho(grupo))
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.column_dimensions[let(j)].width = larguras[j - 1]
+    # altura do cabeçalho: chega para o texto mais comprido (letra 8: ≈ 1,3 caracteres por unidade de largura)
+    import math
+    linhas_cab = max(math.ceil(len(h) / max((w - 1) * 1.3, 1)) for h, w in zip(cabs, larguras))
+    ws.row_dimensions[L0].height = 11 * max(linhas_cab, 2) + 4
+    for i, d in enumerate(linhas, start=1):
+        r = L0 + i
+        for j, (k, _, _, fmt, grp) in enumerate(COLS, start=1):
+            c = ws.cell(r, j, vazio_esp(d.get(k)))
+            if k in NEGRITO:                    # preço atual e níveis de compra e venda a negrito
+                c.font = Font(bold=True, color="C00000" if k == "venda_min" else None)
+            elif k == "venda_min_pct":          # rede de segurança: a vermelho, é extraordinária
+                c.font = Font(color="C00000")
+            elif fmt == "alt":                  # o mesmo valor noutra moeda: letra 9
+                c.font = Font(size=9, color="C00000" if k == "venda_min_alt" else "595959")
+            elif k == "det":                    # x = título que tens
+                c.font = Font(bold=True, color="C00000")
+                c.alignment = Alignment(horizontal="center")
+            if fmt == "preco":                  # o símbolo da moeda vem da formatação condicional (segue a linha)
+                c.number_format = "#,##0.00"
+            elif fmt == "alt":
+                c.number_format = '"("#,##0.00")"'
+            elif fmt == "pct":
+                c.number_format = "+0.0%;-0.0%;0.0%"
+            elif fmt == "num1":
+                c.number_format = "#,##0.0"
+            elif fmt == "qtd":
+                c.number_format = "#,##0.00"
+            elif fmt == "eur":
+                c.number_format = '"€"* #,##0.00'
+                if k == "valor_eur":
+                    c.font = Font(bold=True)
+            elif fmt == "nota":
+                c.number_format = "0.0"
+                c.alignment = Alignment(horizontal="center")
+                if k == "nota":
+                    c.font = Font(bold=True)
+            elif fmt == "pont":
+                c.number_format = "General"
+                c.alignment = Alignment(horizontal="center")
+            elif fmt == "int":
+                c.number_format = "#,##0"
+    n = L0 + max(len(linhas), 1)
+    faixa = lambda k: f"{let(COL[k])}{L0+1}:{let(COL[k])}{n}"
+    from openpyxl.styles.differential import DifferentialStyle
+    from openpyxl.formatting.rule import Rule
+    from openpyxl.styles.numbers import NumberFormat
+    gm, ga = let(COL["moeda"]), let(COL["moeda_alt"])
+    k_preco = [k for k, _, _, f, _ in COLS if f == "preco"]
+    k_alt = [k for k, _, _, f, _ in COLS if f == "alt"]
+    moedas = sorted({txt(d.get("moeda")) for d in linhas} | {txt(d.get("moeda_alt")) for d in linhas} - {""})
+    for i, m in enumerate(moedas):                    # € 123.00 (símbolo à esquerda), conforme a moeda da linha
+        for ks, col, alt in ((k_preco, gm, False), (k_alt, ga, True)):
+            dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=300 + 2 * i + alt, formatCode=fmt_moeda(m, alt)))
+            regra = Rule(type="expression", dxf=dxf, formula=[f'${col}{L0+1}="{m}"'])
+            ws.conditional_formatting.add(" ".join(faixa(k) for k in ks), regra)
+    from openpyxl.formatting.rule import CellIsRule
+    for k in ("lp_eur", "lp_pct"):    # carteira: lucro a verde, prejuízo a vermelho
+        ws.conditional_formatting.add(faixa(k), CellIsRule(operator="greaterThan", formula=["0"],
+                                                           font=Font(color="00A050", bold=True),
+                                                           fill=PatternFill("solid", bgColor="E2EFDA")))
+        ws.conditional_formatting.add(faixa(k), CellIsRule(operator="lessThan", formula=["0"],
+                                                           font=Font(color="C00000", bold=True),
+                                                           fill=PatternFill("solid", bgColor="FCE4D6")))
+    for k in ("pot", "justo_pct"):   # vermelho = abaixo do preço atual, verde = acima
+        ws.conditional_formatting.add(faixa(k), ColorScaleRule(
+            start_type="num", start_value=-0.2, start_color=VERMELHO, mid_type="num", mid_value=0, mid_color=BRANCO,
+            end_type="num", end_value=0.3, end_color=VERDE))
+    from openpyxl.formatting.rule import CellIsRule   # preço do valor justo: verde se acima do atual, vermelho se abaixo
+    ws.conditional_formatting.add(faixa("justo"), CellIsRule(operator="greaterThan", formula=[f"{let(COL['preco'])}{L0+1}"],
+                                                             font=Font(color="00A050", bold=True)))
+    ws.conditional_formatting.add(faixa("justo"), CellIsRule(operator="lessThan", formula=[f"{let(COL['preco'])}{L0+1}"],
+                                                             font=Font(color="C00000", bold=True)))
+    from openpyxl.formatting.rule import FormulaRule
+    # escalas verde-branco-vermelho, cada coluna com a sua própria escala (mediana = branco)
+    verde_em_baixo = dict(start_type="percentile", start_value=5, start_color=VERDE, mid_type="percentile",
+                          mid_value=50, mid_color=BRANCO, end_type="max", end_color=VERMELHO)
+    verde_em_cima = dict(start_type="min", start_color=VERMELHO, mid_type="percentile", mid_value=50,
+                         mid_color=BRANCO, end_type="percentile", end_value=95, end_color=VERDE)
+    dc = let(COL["decisao"])
+    ws.conditional_formatting.add(faixa("decisao"), FormulaRule(
+        formula=[f'ISNUMBER(SEARCH("saúde frágil",{dc}{L0+1}))'], fill=PatternFill("solid", bgColor="F8CBAD"),
+        font=Font(color="C00000", bold=True), stopIfTrue=True))
+    gl, pl = let(COL["nota"]), let(COL["pont"])
+    ws.conditional_formatting.add(faixa("decisao"), FormulaRule(       # decisão: venda pelo sinal a vermelho
+        formula=[f"${pl}{L0+1}=1"], fill=PatternFill("solid", bgColor="F8696B"), font=Font(bold=True), stopIfTrue=True))
+    ws.conditional_formatting.add(faixa("decisao"), FormulaRule(       # não rent. longo prazo (sinal 2.5): laranja
+        formula=[f"${pl}{L0+1}=2.5"], fill=PatternFill("solid", bgColor="F4B183"), stopIfTrue=True))
+    ws.conditional_formatting.add(faixa("decisao"), FormulaRule(       # manter (sinal 2): amarelo
+        formula=[f"AND(ISNUMBER(${pl}{L0+1}),${pl}{L0+1}<3)"], fill=PatternFill("solid", bgColor="FFEB9C"),
+        stopIfTrue=True))
+    for lim, cor in ((4.5, "63BE7B"), (3.75, "A9D18E"), (2.75, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
+        for k in ("nota", "decisao"):                 # nota global e decisão: as cores da pontuação, por faixas
+            ws.conditional_formatting.add(faixa(k), FormulaRule(
+                formula=[f"AND(ISNUMBER(${gl}{L0+1}),${gl}{L0+1}>={lim})"], fill=PatternFill("solid", bgColor=cor),
+                font=Font(bold=lim >= 4.5 or k == "nota"), stopIfTrue=True))
+    for v, cor in ((5, "63BE7B"), (4, "A9D18E"), (3, "E2EFDA"), (2.5, "F4B183"), (2, "FFEB9C"), (1, "F8696B")):
+        for k in ("pont",):                           # pontuação do sinal: 5 verde-escuro … 1 vermelho
+            ws.conditional_formatting.add(faixa(k), FormulaRule(
+                formula=[f"${pl}{L0+1}={v}"], fill=PatternFill("solid", bgColor=cor),
+                font=Font(bold=v in (5, 1)), stopIfTrue=True))
+    nt = let(COL["notas"])
+    ws.conditional_formatting.add(faixa("notas"), FormulaRule(
+        formula=[f'ISNUMBER(SEARCH("VENDA POR PROTEÇÃO",{nt}{L0+1}))'], font=Font(color="C00000", bold=True)))
+    pc = let(COL["pe"])                               # P/E: verde barato … vermelho caro
+    for f, cor in ((f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}<=15)", "C6EFCE"),
+                   (f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}>15,{pc}{L0+1}<=25)", "E2EFDA"),
+                   (f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}>25,{pc}{L0+1}<=40)", "FFEB9C"),
+                   (f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}>40)", "F8CBAD")):
+        ws.conditional_formatting.add(faixa("pe"), FormulaRule(formula=[f], fill=PatternFill("solid", bgColor=cor)))
+    lc = let(COL["lp_txt"])
+    ws.conditional_formatting.add(faixa("lp_txt"), FormulaRule(
+        formula=[f'ISNUMBER(SEARCH("Não Rent",{lc}{L0+1}))'], fill=PatternFill("solid", bgColor="F8CBAD"),
+        font=Font(color="C00000", bold=True)))
+    sv = let(COL["saude"])                            # saúde: alerta a vermelho, OK a verde
+    ws.conditional_formatting.add(faixa("saude"), FormulaRule(
+        formula=[f'LEFT({sv}{L0+1},6)="ALERTA"'], fill=PatternFill("solid", bgColor="F8CBAD"),
+        font=Font(color="C00000", bold=True)))
+    ws.conditional_formatting.add(faixa("saude"), FormulaRule(
+        formula=[f'LEFT({sv}{L0+1},2)="OK"'], fill=PatternFill("solid", bgColor="C6EFCE")))
+    ea = let(COL["etf_acoes"])                        # nota ponderada das ações do ETF: as cores da nota global
+    for lim, cor in ((4.5, "63BE7B"), (3.75, "A9D18E"), (2.75, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
+        ws.conditional_formatting.add(faixa("etf_acoes"), FormulaRule(
+            formula=[f"AND(ISNUMBER(${ea}{L0+1}),${ea}{L0+1}>={lim})"], fill=PatternFill("solid", bgColor=cor),
+            font=Font(bold=lim >= 4.5), stopIfTrue=True))
+    for k, ini in (("qual", 0), ("saude_n", 0)):           # 0 (ou 1) vermelho … 5 verde
+        ws.conditional_formatting.add(faixa(k), ColorScaleRule(
+            start_type="num", start_value=ini, start_color=VERMELHO, mid_type="num", mid_value=(ini + 5) / 2,
+            mid_color=BRANCO, end_type="num", end_value=5, end_color=VERDE))
+    sl = let(COL["sinal"])
+    for chave, cor in (("compra", "C6EFCE"), ("venda", "F8CBAD")):
+        ws.conditional_formatting.add(faixa("sinal"), FormulaRule(
+            formula=[f'ISNUMBER(SEARCH("{chave}",{sl}{L0+1}))'], fill=PatternFill("solid", bgColor=cor)))
+    cm = let(COL["coment"])
+    ws.conditional_formatting.add(faixa("coment"), FormulaRule(
+        formula=[f'OR(ISNUMBER(SEARCH("próxima",{cm}{L0+1})),ISNUMBER(SEARCH("rede de segurança",{cm}{L0+1})))'],
+        fill=PatternFill("solid", bgColor="FFEB9C")))
+    for k, lim in (("var1d", 0.04), ("var1m", 0.15)):   # subidas a verde, descidas a vermelho
+        ws.conditional_formatting.add(faixa(k), ColorScaleRule(
+            start_type="num", start_value=-lim, start_color=VERMELHO, mid_type="num", mid_value=0, mid_color=BRANCO,
+            end_type="num", end_value=lim, end_color=VERDE))
+    for i in range(len(PERIODOS)):
+        ws.conditional_formatting.add(faixa(f"dist{i}"), ColorScaleRule(**verde_em_baixo))   # mais longe do máx. = verde
+        ws.conditional_formatting.add(faixa(f"cima{i}"), ColorScaleRule(**verde_em_cima))    # mais positivo = verde
+        ws.conditional_formatting.add(faixa(f"baixo{i}"), ColorScaleRule(**verde_em_baixo))  # mais negativo = verde
+    # linhas alternadas a cinzento claro (uma sim, uma não). Conta só as linhas visíveis, por isso continua certo
+    # depois de filtrar ou ordenar; nas colunas com escala de cores, as cores da escala ficam por cima.
+    from openpyxl.formatting.rule import FormulaRule
+    tudo = f"A{L0+1}:{let(len(COLS))}{n}"
+    par = f"MOD(SUBTOTAL(103,$B${L0+1}:$B{L0+1}),2)=0"
+    ws.conditional_formatting.add(f"A{L0+1}:B{n}", FormulaRule(       # títulos que tens: x e nome a negrito
+        formula=[f'OR(LOWER($A{L0+1})="x",AND(ISNUMBER($A{L0+1}),$A{L0+1}>0))'], font=Font(bold=True)))
+    ws.conditional_formatting.add(f"A{L0+1}:B{n}", FormulaRule(       # tens (x): x e nome a amarelo; mais escuro
+        formula=[f'AND(OR(LOWER($A{L0+1})="x",AND(ISNUMBER($A{L0+1}),$A{L0+1}>0)),{par})'], fill=PatternFill("solid", bgColor="FFD966"), stopIfTrue=True))
+    ws.conditional_formatting.add(f"A{L0+1}:B{n}", FormulaRule(       # nas linhas que seriam cinzentas
+        formula=[f'OR(LOWER($A{L0+1})="x",AND(ISNUMBER($A{L0+1}),$A{L0+1}>0))'], fill=PatternFill("solid", bgColor="FFE699"), stopIfTrue=True))
+    ws.conditional_formatting.add(tudo, FormulaRule(formula=[par], fill=PatternFill("solid", bgColor="D9D9D9")))
+    # colunas sem uso nesta folha: na Ranking, as dos ETFs; na ETFs, as que nenhum ETF preenche
+    for j, (k, *_) in enumerate(COLS, start=1):
+        vazia = all(not txt(d.get(k)) for d in linhas)
+        if k in OCULTAS or (ranking and k in SO_ETF) or (not ranking and vazia and k not in ("det", "nome", "ticker", "preco", "qtd", "pcompra",
+                                                                                    "valor_eur", "lp_eur", "lp_pct")):
+            ws.column_dimensions[let(j)].hidden = True
+    ws.freeze_panes = f"C{L0+1}"
+    ws.auto_filter.ref = f"A{L0}:{let(len(COLS))}{n}"
+    ws[f"B{n+2}"] = ("Fonte: Yahoo Finance. Cada título na sua moeda (Londres em pence). "
+                     "Preço atual = o mais recente no momento do ▶ ATUALIZAR (fica fixo até à atualização seguinte), "
+                     "incluindo a pré-abertura e o pós-fecho dos EUA; a coluna antes dele diz de que sessão e de que hora é. "
+                     "Variação último dia = preço atual face ao fecho anterior (na pré-abertura, face ao último fecho); "
+                     "variação último mês = último fecho face ao de há 30 dias. "
+                     "Valor transacionado = média dos últimos 3 meses de volume × fecho, convertida em euros (milhões); "
+                     "capitalização em euros (mil milhões); volume = nº médio de títulos negociados por dia. "
+                     "Máx./mín. = máximos e mínimos diários dos "
+                     "últimos 7, 30, 91, 365 e 1095 dias. Média = média dos fechos diários do período. "
+                     "Oscilação acima / abaixo da média = máx. / média − 1 e mín. / média − 1. "
+                     "Distância ao máx. = preço atual / máximo do período − 1. "
+                     "NOTA GLOBAL (coluna K, de ordenação). Ações: 75% pontuação + 12,5% qualidade + 12,5% saúde. ETFs: 75% pontuação "
+                     "+ 25% nota ponderada das ações do ETF (as maiores posições que o Yahoo dá, até 10, cada uma com a sua nota "
+                     "global da folha Ranking, pesada pelo peso no ETF; sem composição no Yahoo usa-se um ETF americano do mesmo "
+                     "índice, indicado na composição; obrigações e ouro: só a pontuação). Se a qualidade ou a saúde "
+                     "faltarem (ETFs, bancos, sem dados), conta a pontuação no lugar delas; com a saúde em ALERTA, a nota global não "
+                     "passa de 2,5, e o mesmo com o longo prazo fraco. A pontuação (e a decisão) continua a ser só o sinal testado: médias, valor justo e analistas. "
+                     "QUALIDADE DO NEGÓCIO (0-5) = 5 × média de 3 critérios, cada um de 0 a 1 em linha reta entre mau e bom: ROIC "
+                     "5% → 15% (quanto rende cada euro investido no negócio), lucro bruto / ativo total 10% → 30% (poder de preço) e "
+                     "FCF / lucro líquido 0,5 → 0,9 (o lucro é dinheiro a sério); precisa de 2 dos 3. O preço (FCF yield, EV/EBITDA) "
+                     "fica fora, porque já está na pontuação; só se mostra nos comentários e nas últimas colunas. "
+                     "SAÚDE FINANCEIRA (0-5) = 5 × média de: dívida líquida / EBITDA 3× → 1× (utilities e imobiliárias 5× → 2×; com "
+                     "mais caixa do que dívida = 1), EBIT / juros 3× → 8× (sem juros = 1) e FCF (positivo = 1, negativo com caixa "
+                     "líquida = 0,5, negativo com dívida = 0). ALERTA se a dívida passar o limite mau, se o EBIT não cobrir 3× os "
+                     "juros, se o FCF for negativo com dívida ou se o EBITDA for negativo com dívida; uma compra em alerta aparece "
+                     "como \"Saúde frágil\". Bancos, seguradoras e financeiras: não se aplica. Dados do Yahoo (últimos 12 meses e "
+                     "último relatório anual), indicadores nas últimas colunas; numa data de referência passada são os de hoje; o "
+                     "↻ PREÇOS recalcula a nota global mas não os indicadores. Na mesma nota, desempate: pontuação, qualidade e a "
+                     "média de analistas e valor justo. "
+                     "Valor justo = lucro por ação dos últimos 12 meses × P/E habitual do título (mediana dos últimos 3 anos); sem histórico "
+                     "de lucros, número de Graham. Verde = acima do preço atual, vermelho = abaixo. É um modelo simples, não uma garantia. "
+                     "Os 4 níveis (valor e % face ao preço atual; σ = volatilidade mensal do título, σ diário = σ / √21): "
+                     "COMPRA MÁXIMA (a ordem limite principal) = preço × exp(σ diário × (−0,75 + 0,25 × tendência dos últimos 20 dias)): "
+                     "sempre abaixo do preço (≈ −1,7%), menos em subida franca e mais em queda franca; no teste é executada ~58% das "
+                     "vezes em 3 dias e ~71% em 7 (se não for, e o sinal continuar de compra, comprar ao preço do momento). COMPRA RAZOÁVEL (trigger) = preço × exp(−σ) (≈ −10%): só é atingida numa "
+                     "correção a sério (~25% das vezes num mês) — boa para uma 2ª ordem com parte do montante. VENDA RAZOÁVEL = preço + 2σ: objetivo de ganho realista para 3-4 meses — referência, "
+                     "não uma ordem: no teste, vender tudo num objetivo fixo rendeu menos do que esperar pelo sinal. VENDA MÍNIMA = "
+                     "maior fecho dos últimos 6 meses − 4σ: rede de segurança contra uma queda brusca antes de as médias cruzarem "
+                     "(no teste, usá-la como stop automático custou um pouco: é para casos extremos). "
+                     "Último ano: seguir o sinal = estar comprado só com a média de 100 dias acima da de 200, nos últimos 12 meses "
+                     "(começa comprado com 100; vende e volta a comprar à abertura do dia seguinte ao cruzamento; custo de 0,1% por "
+                     "operação e 2% ao ano no dinheiro parado); manter = comprar e esperar. "
+                     "Resultados passados não garantem os futuros. "
+                     "Cores: verde nos extremos (mais longe do máximo, "
+                     "maior oscilação para cima ou para baixo), branco na mediana, vermelho no lado oposto. "
+                     "O preço-alvo é a média das estimativas dos analistas a 12 meses — não é uma recomendação. "
+                     "Indicadores (últimas colunas): PPO = (média exponencial 12 dias / média 26 dias − 1); sinal = média 9 do PPO; "
+                     "histograma = PPO − sinal (a subir = tendência a ganhar força); RSI 14 (acima de 70 = esticado, abaixo de 30 = "
+                     "sobrevendido); média 200 dias = tendência longa; momentum 12 meses sem o último. "
+                     "PONTUAÇÃO (g = média 100 / média 200 − 1; J = valor justo / preço − 1; A = alvo dos analistas / preço − 1): "
+                     "5 COMPRA FORTE = (g ≥ 5%, J ≥ 50% e A ≥ 50%) ou (J ≥ 100%, A ≥ 50% e g > 0); muito barata (J ≥ 100% e A ≥ 50%) "
+                     "com g < 0: 4 se o preço já estiver acima da média 100 (a queda parou), senão 2; 4 COMPRA MÉDIA = g > 0, J ≥ 25% e "
+                     "A ≥ 25%; 3 COMPRA = g > 0, J ≥ 0 e A ≥ 10%; 1 VENDA = média 100 abaixo da 200 e preço abaixo da média 200 (a "
+                     "não ser que J e A ≥ 25%), ou preço abaixo da venda mínima; 2 MANTER = o resto. Sem valor justo conta só A; "
+                     "ETFs: comparados entre si pela subida dos últimos 6 meses — 5 = entre os 20% que mais subiram e g > 0; "
+                     "4 = entre os 40% e g > 0; 3 = g > 0; 1 = g < 0, preço abaixo da média 200 e subida 6 meses negativa; 2 = o "
+                     "resto (testado em 5 índices 2013-2023 e 5 ETFs 2016-2026: ficar com os que mais subiram em 6 meses rendeu "
+                     "+3 a +4 pontos por ano face a manter todos; amostra pequena). Ações sem analistas: só a tendência (4 = g ≥ "
+                     "5% e preço acima da média 200; 3 = g > 0 e preço acima da média 200; 1 = g < 0 e preço abaixo da média 200). "
+                     "Comentários: compra / venda próxima = médias a menos "
+                     "de 1% de cruzar e a aproximar-se (face a há 5 dias): a compra próxima já conta como subida (\"antecipada\"; "
+                     "testado: cruzou em 40 dias 85-95% das vezes e rendeu o mesmo ou mais), a venda próxima limita a 2 (cruzou "
+                     "75% das vezes e os meses seguintes renderam metade ou menos); \"para N\" = o que falta para subir de nível. A parte das médias (venda) foi testada; os "
+                     "limiares do valor justo e dos analistas não se podem testar no passado (o Yahoo não guarda as estimativas antigas). "
+                     "BOLSAS EM EUROS: ações e ETFs fora do euro usam a mesma ação numa bolsa europeia em euros (Xetra, Euronext...), "
+                     "confirmada pelo preço; analistas, valor justo, volume e capitalização vêm da bolsa principal, convertidos para "
+                     "euros. Botões ◎ LISTA BASE / € PRIVILEGIAR EUR / $ PRIV. EUA / ⊕ TODAS AS BOLSAS: escolhem a bolsa (base = a da "
+                     "lista; EUA = a ação ou o ADR americano das empresas europeias; os ETFs europeus não têm equivalente nos EUA; "
+                     "todas = uma linha por bolsa: a da lista, a europeia em euros e a americana, para comparar preços e horários) "
+                     "e atualizam o painel; nos três primeiros, títulos repetidos só aparecem uma vez. As folhas Procurar seguem o "
+                     "mesmo botão: € ou $ propõem a listagem nessa zona, base a com mais negócio, todas mostram cada listagem "
+                     "(correspondências em "
+                     + os.path.basename(FICH_EUR) + "). "
+                     "Regra das médias 100/200 no teste de estratégias (21 títulos, 2010 períodos de 1996 "
+                     "a 2026): quedas −12% em vez de −25% a manter, subidas +29% em vez de +40%, equilibrado +4,9% (manter +5,4%), "
+                     "pior período −61% (manter −75%), ~3 operações por período; melhor do que 50/200, do que a média 200 sozinha e "
+                     "do que qualquer combinação de percentagens VL/VS/CS/CL (mesmo otimizadas título a título). Não ganha a manter "
+                     "em subidas longas: é um seguro contra quedas grandes. É informação, não uma recomendação.")
+    ws[f"B{n+2}"].font = Font(italic=True, size=9, color="595959")
+
+
+def guardar_e_abrir(wb):
+    filtros = ler_filtros()                         # os teus filtros (todas as folhas), para repor no livro novo
+    try:
+        wb.save(FICHEIRO)
+    except PermissionError:
+        try:   # o painel está aberto no Excel: fecha-o (sem guardar) e tenta outra vez
+            Excel(FICHEIRO).ops([{"op": "fechar"}])
+            time.sleep(1)
+            wb.save(FICHEIRO)
+        except Exception:
+            print(f"\nO {os.path.basename(FICHEIRO)} está aberto. Fecha-o no Excel e volta a correr a atualização.")
+            input("Carrega em Enter para sair...")
+            sys.exit(1)
+    if os.name == "nt":
+        os.startfile(FICHEIRO)
+        repor_filtros(filtros)
+
+
+def registar_botao():
+    """O Excel bloqueia links diretos para ficheiros .bat ("não é possível abrir o ficheiro especificado").
+    Por isso o botão aponta para painelacoes://atualizar, e aqui regista-se esse endereço no Windows
+    (só para este utilizador, sem precisar de administrador) a correr o Atualizar_painel.bat desta pasta.
+    Volta a registar em cada execução, para acompanhar a pasta se ela mudar de sítio."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        bat = BAT
+        cmd_exe = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+        comando = f'"{cmd_exe}" /c ""{bat}" "%1""'
+        base = rf"Software\Classes\{PROTOCOLO}"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:Painel de acoes")
+            winreg.SetValueEx(k, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base + r"\shell\open\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, comando)
+    except Exception as e:
+        print("Aviso: não foi possível ativar o botão ATUALIZAR do Excel:", e)
+
+
+def volatilidade(Cl):
+    """σ mensal: média do desvio-padrão dos retornos diários dos últimos 63 e 252 dias, × √21."""
+    import numpy as np
+    r = np.diff(np.log(Cl))
+    if len(r) < 40:
+        return None
+    return float((r[-63:].std() + r[-252:].std()) / 2 * np.sqrt(21))
+
+
+CURTA = 100            # sinal: média de CURTA dias contra a de 200 (testado: 100/200 foi o melhor compromisso, à frente de 50/200)
+STOP_SIGMAS = None     # stop dentro do sinal: desligado (testado: 2,5σ, 3σ e 4σ pioraram o resultado das médias)
+REDE_SIGMAS = 4.0      # venda mínima (rede de segurança): 4 σ (mensais) abaixo do maior fecho dos últimos 6 meses
+ALVO_SIGMAS = 2.0      # venda razoável: preço + 2 σ (subida típica boa em 3-4 meses)
+
+
+def sinal_estrategia(Cl, sig, datas=None, i_ini=None, i_fim=None, devolver_serie=False):
+    """Sinal do painel, só com fechos (decide no fecho, executa na abertura seguinte): comprado enquanto a média curta
+      (CURTA dias) estiver acima da média 200; sai quando passa abaixo da 200; volta a comprar quando passa acima.
+      (Com STOP_SIGMAS: sai também se o fecho cair STOP_SIGMAS σ abaixo do maior fecho desde a compra e só volta quando
+      o fecho passar acima da média curta — testado e pior, por isso está desligado.)
+    Devolve dict(dentro, desde, mmc, mm200, maximo, stop) do último fecho (ou a lista de estados, devolver_serie=True)."""
+    import numpy as np
+    c = np.asarray(Cl, dtype=float)
+    n = len(c)
+    if n < 200 or not sig:
+        return None
+    soma = np.concatenate([[0.0], np.cumsum(c)])
+    m50 = np.full(n, np.nan)          # média curta (CURTA dias)
+    m200 = np.full(n, np.nan)
+    m50[CURTA - 1:] = (soma[CURTA:] - soma[:-CURTA]) / CURTA
+    m200[199:] = (soma[200:] - soma[:-200]) / 200
+    i0 = 199 if i_ini is None else max(199, i_ini)
+    i1 = n - 1 if i_fim is None else i_fim
+    dentro = bool(m50[i0] > m200[i0])
+    maximo, bloqueado, desde = c[i0], False, i0
+    serie = []
+    for k in range(i0, i1 + 1):
+        alta = m50[k] > m200[k]
+        if dentro:
+            maximo = max(maximo, c[k])
+            if not alta:
+                dentro, desde = False, k
+            elif STOP_SIGMAS and c[k] < maximo * (1 - STOP_SIGMAS * sig):
+                dentro, desde, bloqueado = False, k, True
+        else:
+            if bloqueado and c[k] > m50[k] and c[k - 1] <= m50[k - 1]:
+                bloqueado = False
+            if alta and not bloqueado:
+                dentro, desde, maximo = True, k, c[k]
+        serie.append(dentro)
+    if devolver_serie:
+        return serie
+    data = None
+    if datas is not None:
+        try:
+            data = datas[desde]
+        except Exception:
+            data = None
+    return dict(dentro=dentro, desde=data, mmc=float(m50[i1]), mm200=float(m200[i1]), maximo=float(maximo),
+                gap5=float(m50[i1 - 5] / m200[i1 - 5] - 1) if i1 - 5 >= 199 else None,
+                stop=float(c[max(0, i1 - 125):i1 + 1].max() * np.exp(-REDE_SIGMAS * sig)),   # rede: sempre
+                fecho=float(c[i1]))
+
+
+# Pontuação 1-5 (g = média 100 / média 200 − 1; J = valor justo / preço − 1; A = preço-alvo dos analistas / preço − 1;
+# p200 = preço / média 200 − 1). Do nível mais alto para o mais baixo, fica o primeiro que se cumpre:
+#   5 compra forte: (g ≥ 5% e J ≥ 50% e A ≥ 50%) ou (J ≥ 100% e A ≥ 50% e g > 0)
+#     muito barata (J ≥ 100% e A ≥ 50%) mas com a média 100 abaixo da 200: 4 se o preço já estiver acima da média 100
+#     (a queda parou), 2 se ainda estiver abaixo (a cair; testado: nas descidas, com o preço abaixo da média 100 os
+#     6 meses seguintes renderam menos e caíram mais: +10% e −20% contra +15% e −15%)
+#   4 compra média: g > 0 e J ≥ 25% e A ≥ 25%
+#   3 compra:       g > 0 e J ≥ 0 e A ≥ 10%
+#   1 venda (proteção, o que foi testado): g < 0 e preço abaixo da média 200, a não ser que J ≥ 25% e A ≥ 25%;
+#                   ou preço abaixo da venda mínima (rede de segurança)
+#   2 manter (hold): o resto
+# Sem valor justo, decide só pelos analistas; sem analistas (ETFs), só pela tendência: 4 = g ≥ 5% e preço acima da
+# média 200; 3 = g > 0 e preço acima da média 200; 1 = g < 0 e preço abaixo da média 200; 2 = o resto.
+NIVEIS = {5: "Compra forte", 4: "Compra média", 3: "Compra", 2.5: "Não Rent. Longo Prazo", 2: "Manter (hold)",
+          1: "Venda"}
+P5_TEND, P5_J, P5_A, P5_J2 = 0.05, 0.50, 0.50, 1.00
+P4_J, P4_A = 0.25, 0.25
+P3_J, P3_A = 0.0, 0.10
+P1_SALVA_J, P1_SALVA_A = 0.25, 0.25
+PROXIMO = 0.01        # médias a menos de 1% de cruzar = compra / venda próxima
+DIAS_INVERSAO = 30    # cruzamento das médias há menos disto (dias de calendário) = compra / venda devido a inversão
+# Longo prazo: inclinação da reta de tendência das cotações mensais desde sempre (o que o Yahoo tiver; com dividendos),
+# em subida média por ano. Abaixo de LP_MIN (ou negativa), o que seria compra (3 a 5) passa a 2.5 "Não Rent. Longo Prazo": uma ação que ao longo dos anos
+# não sobe (p. ex. a Soitec, que já esteve muito mais alta) não é "compra forte" só porque está num bom momento.
+LP_MIN = 0.03         # valor por defeito; o que conta é o da célula C_LPMIN (escolhido por ti)
+C_LPMIN = "D4"
+
+
+def ler_lp_min(v):
+    """'3%', '3', 0.03 -> 0.03 (se vier vazio ou estranho, fica o valor por defeito)."""
+    try:
+        if isinstance(v, (int, float)):
+            x = float(v)
+        else:
+            x = float(txt(v).replace("%", "").replace(",", ".").strip())
+        return x / 100 if abs(x) >= 1 else x
+    except (TypeError, ValueError):
+        return 0.03
+LONGO = {}            # ticker -> (subida média por ano, ano do início dos dados)
+
+
+def longo_prazo(yf, tickers):
+    """{ticker: (subida usada, ano inicial, desde sempre, 5 anos, 1 ano)}: retas de tendência dos fechos mensais (até à
+    data de referência). A subida usada (teste do longo prazo fraco) é a MENOR das retas desde sempre e dos últimos 5
+    anos; a de 1 ano só se mostra."""
+    import numpy as np
+    out = {}
+    tickers = [t for t in dict.fromkeys(tickers) if t]
+    if not tickers:
+        return out
+    print(f"A descarregar a história completa (mensal) de {len(tickers)} títulos, para a tendência de longo prazo...")
+    try:
+        h = _cortar(_por_ticker(yf.download(tickers, period="max", interval="1mo", group_by="ticker",
+                                            auto_adjust=True, threads=True, progress=False), tickers))
+    except Exception as e:
+        print("   aviso: sem história longa:", e)
+        return out
+    for t in tickers:
+        try:
+            c = h[t]["Close"].dropna()
+            c = c[c > 0]
+            if len(c) < 36:                       # menos de 3 anos: não conta
+                continue
+            def reta(cc):
+                x = np.arange(len(cc)) / 12.0
+                return float(np.exp(np.polyfit(x, np.log(cc.to_numpy(dtype=float)), 1)[0]) - 1)
+            s_all = reta(c)
+            s5 = reta(c.iloc[-61:]) if len(c) >= 61 else None
+            s1 = reta(c.iloc[-13:]) if len(c) >= 13 else None
+            usado = min(s_all, s5) if s5 is not None else s_all
+            out[t] = (usado, int(c.index[0].year), s_all, s5, s1)
+        except Exception:
+            continue
+    return out
+# "Situação em": o painel pode ser calculado como estava numa data passada (preços, médias, sinais e níveis dessa data;
+# analistas e valor justo são os de hoje, porque o Yahoo não guarda os antigos). A coluna "Da data de referência até
+# hoje" mostra quanto cada título andou desde então (para ver se as recomendações dessa data acertaram).
+C_REF, C_DATAREF = "H5", "J5"
+REFS = {"Atual": 0, "Data (escrever em J5)": None, "1 dia": 1, "2 dias": 2, "3 dias": 3, "1 semana": 7,
+        "15 dias": 15, "1 mês": 30, "3 meses": 91, "6 meses": 182, "9 meses": 273, "1 ano": 365,
+        "1 ano e meio": 548, "2 anos": 730, "2 anos e meio": 913, "3 anos": 1095, "5 anos": 1826}
+REF = None            # datetime da situação pedida (None = atual)
+
+
+def ler_data(v):
+    """Data escrita numa célula, venha como vier: data do Excel, número de série do Excel (o que o Excel aberto
+    devolve), ou texto dd/mm/aaaa, dd-mm-aaaa, dd.mm.aaaa, dd/mm/aa ou aaaa-mm-dd."""
+    from datetime import date
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, date):
+        return datetime(v.year, v.month, v.day)
+    if isinstance(v, (int, float)) and 1000 < v < 100000:          # número de série do Excel (dias desde 30/12/1899)
+        return datetime(1899, 12, 30) + timedelta(days=int(v))
+    t = txt(v)
+    for f in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(t[:10].strip(), f)
+        except ValueError:
+            continue
+    try:                                                            # p. ex. "2026-08-13 00:00:00"
+        return datetime.fromisoformat(t)
+    except ValueError:
+        return None
+
+
+def data_ref(escolha, data):
+    """Data da situação pedida (None = atual)."""
+    escolha = txt(escolha) or "Atual"
+    if escolha not in REFS or REFS[escolha] == 0:
+        return None
+    if REFS[escolha] is None:
+        d = ler_data(data)
+        if d is None:
+            raise SystemExit(f"Escreve a data em {C_DATAREF} (dd/mm/aaaa) ou escolhe outra opção em {C_REF}.")
+        if d > datetime.now():
+            raise SystemExit(f"A data em {C_DATAREF} ({d:%d/%m/%Y}) está no futuro: escreve uma data passada.")
+        return d
+    return datetime.now() - timedelta(days=REFS[escolha])
+
+
+def _cortar(hist):
+    """Velas só até à data de referência."""
+    if REF is None:
+        return hist
+    out = {}
+    for k, v in hist.items():
+        if v is None:
+            continue
+        if getattr(v.index, "tz", None) is not None:
+            v = v.copy()
+            v.index = v.index.tz_localize(None)
+        out[k] = v[v.index <= REF]
+    return out
+# ETFs: comparados entre si pela subida dos últimos 6 meses (os que sobem mais tendem a continuar; testado em 5 índices
+# 2013-2023 e 5 ETFs 2016-2026: ficar com os 2 que mais subiram em 6 meses rendeu +3 a +4 pontos por ano face a manter
+# todos, e o filtro 100/200 sozinho rendeu menos). 5 = entre os 20% que mais subiram e média 100 acima da 200;
+# 4 = entre os 40% e média 100 acima da 200; 3 = média 100 acima da 200; 1 = média 100 abaixo da 200, preço abaixo da
+# média 200 e subida em 6 meses negativa; 2 = o resto.
+ETF_TOP5, ETF_TOP4 = 0.20, 0.40
+
+
+def pontuar_etfs(linhas, preco_de=lambda d: d.get("preco")):
+    """Põe em cada ETF o seu lugar pela subida em 6 meses (entre os ETFs com dados) e volta a pontuar."""
+    def m6(d):
+        p, r = preco_de(d), d.get("ref6m")
+        return p / r - 1 if isinstance(p, (int, float)) and isinstance(r, (int, float)) and r else None
+    etfs = [d for d in linhas if d.get("tipo") == "ETF"]
+    com = sorted([d for d in etfs if m6(d) is not None], key=m6, reverse=True)
+    for i, d in enumerate(com):
+        d["_pos6"], d["_n6"] = (i / (len(com) - 1) if len(com) > 1 else 0.0), len(com)
+    for d in etfs:
+        p = preco_de(d)
+        pontuar(d, float(p) if isinstance(p, (int, float)) else None)
+        d.pop("_pos6", None)
+        d.pop("_n6", None)
+
+
+def pontuar(d, preco):
+    """Pontuação, decisão e comentários de uma linha (com o preço dado: o do ▶ ATUALIZAR ou o do ↻ PREÇOS)."""
+    n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    m100, m200 = n("mm100c"), n("mm200c")
+    d["pont"] = d["decisao"] = d["coment"] = d["nota"] = None
+    if not preco or not m100 or not m200:
+        return
+    g, p200 = m100 / m200 - 1, preco / m200 - 1
+    J, A = n("justo_pct"), n("pot")
+    rede = n("venda_min")          # rede de segurança: queda demasiado grande face ao máximo de 6 meses, em qualquer tendência
+    so_tend = A is None
+    mom6 = preco / n("ref6m") - 1 if n("ref6m") else None
+    d["mom6"] = mom6
+    pos6, n_etf = d.get("_pos6"), d.get("_n6")              # lugar entre os ETFs pela subida em 6 meses (0 = o 1.º)
+    etf_mom = d.get("tipo") == "ETF" and mom6 is not None and pos6 is not None
+    jok = lambda x: J is None or J >= x
+    barata = J is not None and A is not None and J >= P5_J2 and A >= P5_A
+    # compra / venda próxima: médias a menos de 1% de cruzar E a aproximar-se (face a há 5 dias). Testado (25 títulos
+    # 2016-26 e 18 ETFs 2001-23): a compra próxima cruzou em 40 dias 85-95% das vezes e os 3 meses seguintes renderam
+    # o mesmo ou mais do que já em subida (e caíram menos) -> conta já como subida; a venda próxima cruzou 75% das vezes
+    # e os 3-6 meses seguintes renderam metade ou menos -> não se compra (no máximo 2)
+    g5 = n("gap5")
+    compra_prox = -PROXIMO < g < 0 and g5 is not None and g > g5
+    venda_prox = 0 <= g < PROXIMO and g5 is not None and g < g5
+    sobe, desce = g > 0 or compra_prox, g < 0 and not compra_prox
+    if rede and preco < rede:
+        p = 1
+    elif etf_mom:
+        p = (5 if pos6 <= ETF_TOP5 and sobe else 4 if pos6 <= ETF_TOP4 and sobe else 3 if sobe
+             else 1 if (p200 < 0 and mom6 < 0) else 2)
+    elif so_tend:
+        p = 4 if g >= P5_TEND and p200 > 0 else 3 if sobe and p200 > 0 else 1 if desce and p200 < 0 else 2
+    elif (g >= P5_TEND and jok(P5_J) and A >= P5_A) or (barata and sobe):
+        p = 5
+    elif barata:
+        p = 4 if preco > m100 else 2
+    elif sobe and jok(P4_J) and A >= P4_A:
+        p = 4
+    elif sobe and jok(P3_J) and A >= P3_A:
+        p = 3
+    elif desce and p200 < 0 and not (J is not None and J >= P1_SALVA_J and A >= P1_SALVA_A):
+        p = 1
+    else:
+        p = 2
+    if venda_prox and p > 2:
+        p = 2
+    lp = n("lp")
+    lp_fraco = lp is not None and lp < LP_MIN
+    limitado = lp_fraco and p >= 3                 # seria compra, mas não rende a longo prazo -> 2.5
+    alerta = txt(d.get("saude")).startswith("ALERTA")
+    fragil = alerta and p >= 3                     # seria compra, mas a saúde financeira está em alerta
+    if limitado:
+        p = 2.5
+    c = []
+    if compra_prox:
+        c.append(f"compra próxima: média 100 a {g:+.1%} da 200 e a subir (conta já como subida)")
+    elif venda_prox:
+        c.append(f"venda próxima: média 100 só {g:+.1%} acima da 200 e a descer (não comprar; no máximo 2)")
+    elif -PROXIMO < g < 0:
+        c.append(f"médias perto ({g:+.1%}) mas a afastar-se")
+    elif 0 <= g < PROXIMO:
+        c.append(f"médias perto ({g:+.1%}) mas a afastar-se para cima")
+    if rede and preco < rede:
+        c.append("preço abaixo da venda mínima (rede de segurança)")
+    elif g > 0 and p200 < 0:
+        c.append(f"preço abaixo da média 200 ({p200:+.1%}): tendência a enfraquecer")
+    elif g < 0 and p200 > 0:
+        c.append(f"preço já acima da média 200 ({p200:+.1%}): pode estar a recuperar")
+    falta = lambda nome, v, lim: f"{nome} ≥ {lim:+.0%} (agora {v:+.0%})" if v < lim else None
+    if not so_tend and p in (2, 3, 4) and not (barata and g <= 0) and not venda_prox:
+        if not sobe:
+            pedir, alvo_n = [f"média 100 acima da 200 (agora {g:+.1%})"], 3
+            if J is not None and J < P3_J:
+                pedir.append(falta("valor justo", J, P3_J))
+            if A < P3_A:
+                pedir.append(falta("analistas", A, P3_A))
+        elif p == 4:
+            pedir, alvo_n = [falta("tendência", g, P5_TEND), falta("valor justo", J, P5_J) if J is not None else None,
+                             falta("analistas", A, P5_A)], 5
+        elif p == 3:
+            pedir, alvo_n = [falta("valor justo", J, P4_J) if J is not None else None, falta("analistas", A, P4_A)], 4
+        else:
+            pedir, alvo_n = [falta("valor justo", J, P3_J) if J is not None else None, falta("analistas", A, P3_A)], 3
+        pedir = [x for x in pedir if x]
+        if pedir:
+            c.append(f"para {alvo_n}: " + ", ".join(pedir))
+    if barata and g <= 0:
+        c.append(f"muito barata mas em descida: {'já' if preco > m100 else 'ainda não'} acima da média 100 "
+                 f"({preco / m100 - 1:+.1%}); para 5: média 100 acima da 200 (agora {g:+.1%})")
+    if p == 1 and not (rede and preco < rede) and not etf_mom:
+        c.append(f"para 2: preço acima da média 200 (agora {p200:+.1%})"
+                 + ("" if so_tend else f" ou valor justo e analistas ≥ +{P1_SALVA_A:.0%}"))
+    if J is None and not so_tend:
+        c.append("sem valor justo: conta só os analistas")
+    if so_tend and d.get("tipo") != "ETF":
+        c.append("sem preço-alvo dos analistas: conta só a tendência")
+    if etf_mom:
+        lugar = round(pos6 * (n_etf - 1)) + 1 if n_etf > 1 else 1
+        c.append(f"subida 6 meses {mom6:+.1%} ({lugar}.º de {n_etf} ETFs)")
+        if p in (3, 4) and g > 0:
+            lim = ETF_TOP5 if p == 4 else ETF_TOP4
+            c.append(f"para {p + 1}: entre os {lim:.0%} primeiros em subida 6 meses")
+        elif g <= 0 and p == 2:
+            c.append(f"para 3: média 100 acima da 200 (agora {g:+.1%})")
+        elif p == 1:
+            c.append(f"para 2: subida 6 meses positiva ou preço acima da média 200 (agora {p200:+.1%})")
+    sinal = None
+    if compra_prox:
+        sinal = "compra próxima"
+    elif venda_prox:
+        sinal = "venda próxima"
+    else:
+        m = re.search(r"(subida|descida) desde (\d{2}/\d{2}/\d{4})", str(d.get("tend") or ""))
+        if m and ((REF or datetime.now()) - datetime.strptime(m.group(2), "%d/%m/%Y")).days <= DIAS_INVERSAO:
+            sinal = "compra devido a inversão" if m.group(1) == "subida" else "venda devido a inversão"
+    d["sinal"] = sinal
+    notas = re.sub(r"(; )?VENDA POR PROTEÇÃO:[^;]*", "", str(d.get("notas") or "")).strip("; ")
+    if p == 1:
+        motivo = ("queda brusca: preço abaixo da venda mínima (rede de segurança)" if rede and preco < rede else
+                  "tendência de descida (média 100 abaixo da 200 e preço abaixo da média 200), para evitar uma queda "
+                  "prolongada e sucessiva")
+        notas = (notas + "; " if notas else "") + "VENDA POR PROTEÇÃO: " + motivo
+    d["notas"] = notas or None
+    if lp is not None:
+        base_lp = re.sub(r":.*$", "", str(d.get("lp_txt") or f"{lp:+.1%}/ano"))
+        d["lp_txt"] = (base_lp + (f": não sobe ao longo dos anos (menos de {LP_MIN:.1%}/ano) → 2.5 Não Rent. Longo Prazo"
+                                  if limitado else " (fraco)" if lp_fraco else ""))
+        if lp_fraco:
+            c[:] = [x for x in c if not x.startswith(("para 4", "para 5"))]
+        if limitado:
+            c.append(f"longo prazo fraco ({lp:+.1%}/ano): 2.5 em vez de compra")
+    if alerta:
+        c.append("saúde financeira em alerta (" + re.sub(r"^ALERTA: | \(.*$", "", txt(d.get("saude")))
+                 + f"): nota global no máx. {NOTA_ALERTA}".replace(".", ","))
+    q, sn = n("qual"), n("saude_n")
+    if q is not None:
+        c.append(f"qualidade {q:.1f}/5 ({detalhe_qualidade(d)})".replace(".", ",", 1))
+    d["pont"], d["coment"] = p, " · ".join(c) or None
+    d["_vprox"], d["_cprox"] = venda_prox, compra_prox
+    d["nota"] = nota_global(d)
+    d["decisao"] = decisao_global(d)
+
+
+def niveis(d, preco):
+    """Os 4 níveis (valor e % face ao preço atual): compra razoável, compra máxima, venda razoável, venda mínima."""
+    import math
+    sig = d.get("sigma") if isinstance(d.get("sigma"), (int, float)) else None
+    if not preco or not sig:
+        return
+    sd = sig / 21 ** 0.5
+    t = d.get("tend20") if isinstance(d.get("tend20"), (int, float)) else 0.0
+    t = max(-2.0, min(2.0, t))
+    teto = preco * math.exp(sd * (TETO_BASE + TETO_TEND * t))
+    d["compra"] = min(teto, preco * math.exp(-RAZOAVEL_SIGMAS * sig))
+    d["teto"] = teto
+    d["venda_alvo"] = preco * (1 + ALVO_SIGMAS * sig)
+    stop = d.get("stop") if isinstance(d.get("stop"), (int, float)) else None
+    d["venda_min"] = stop if stop else preco * math.exp(-REDE_SIGMAS * sig)   # fora: a rede se comprasses agora
+    for k in ("compra", "teto", "venda_alvo", "venda_min"):
+        d[k + "_pct"] = d[k] / preco - 1
+
+
+def ordens(h, preco, compra):
+    """Regra da média de 200 dias (estado, níveis de saída e de reentrada), volatilidade σ e teste do último ano."""
+    out = {}
+    if not preco or h is None or len(h) <= 60:
+        return out
+    sig = volatilidade(h["Close"].to_numpy(dtype=float))
+    if sig:
+        out["sigma"] = sig
+    h = h.copy()
+    for col in ("Open", "High", "Low"):
+        h[col] = h[col].fillna(h["Close"])
+    Cl = h["Close"].to_numpy(dtype=float)
+    Op = h["Open"].to_numpy(dtype=float)
+    s = sinal_estrategia(Cl, sig, list(h.index))
+    if s:
+        out.update(_alta=s["dentro"], _desde=s["desde"], mm100c=s["mmc"], mm200c=s["mm200"], stop=s["stop"],
+                   gap5=s["gap5"])
+    sdd = (sig or 0) / 21 ** 0.5
+    if sdd and len(Cl) > 21:
+        import math
+        out["tend20"] = max(-2.0, min(2.0, math.log(Cl[-1] / Cl[-21]) / (sdd * 20 ** 0.5)))
+    i0 = max(0, len(Cl) - 253)
+    out["t_hold"] = Cl[-1] / Cl[i0] - 1
+    if len(Cl) >= 200 + 253 and sig:                  # o sinal no último ano (médias e stop com a história anterior)
+        serie = sinal_estrategia(Cl, sig, i_ini=i0 - 1, devolver_serie=True)
+        out["t_m200"] = simular_sinal(Cl, Op, i0, len(Cl) - 1, serie)
+    return out
+
+
+def simular_sinal(Cl, Op, i0, i1, serie, custo=None, juro=None):
+    """Começa comprado com 100 em i0 e segue o sinal (serie[k] = estado no fecho do dia i0 - 1 + k): compra e vende à
+    abertura do dia seguinte; o dinheiro parado rende 'juro'. Devolve a rentabilidade."""
+    custo = TESTE_CUSTO if custo is None else custo
+    juro = TESTE_JURO if juro is None else juro
+    T, Sh, jd = 0.0, 100 * (1 - custo) / Cl[i0], juro / 252
+    for k in range(i0 + 1, i1 + 1):
+        T *= 1 + jd
+        quer = serie[k - i0]               # estado no fecho de k-1
+        if Sh and not quer:
+            T, Sh = T + Sh * Op[k] * (1 - custo), 0.0
+        elif not Sh and quer:
+            T, Sh = 0.0, T * (1 - custo) / Op[k]
+    return (T + Sh * Cl[i1]) / 100 - 1
+
+
+def valor_justo(tk, h, preco, info):
+    """Valor justo = lucro por ação dos últimos 12 meses × P/E habitual do próprio título (mediana dos últimos 3 anos).
+    Se não houver histórico de lucros, usa o número de Graham √(22,5 × lucro por ação × valor contabilístico por ação)."""
+    import numpy as np
+    import pandas as pd
+    try:
+        quando = pd.Timestamp(REF) if REF is not None else pd.Timestamp.now()
+        atras = (pd.Timestamp.now() - quando).days // 91 if REF is not None else 0
+        ed = None
+        for tent in range(3):                  # o Yahoo às vezes falha este pedido: sem ele caía-se no número de Graham
+            try:
+                ed = tk.get_earnings_dates(limit=min(100, 24 + atras))
+                if ed is not None and len(ed):
+                    break
+            except Exception:
+                ed = None
+            time.sleep(2 * (tent + 1))
+        col = next(c for c in ed.columns if "Reported" in c)
+        eps = ed[col].dropna().astype(float)
+        eps.index = pd.to_datetime(eps.index)
+        if eps.index.tz is not None:
+            eps.index = eps.index.tz_localize(None)
+        eps = eps[eps.index <= quando].sort_index()          # só os lucros já divulgados na data
+        eps = eps[~eps.index.normalize().duplicated()]
+        try:                                   # lucros antigos ainda não ajustados a desdobramentos de ações
+            sp = tk.splits
+            sp.index = sp.index.tz_localize(None) if sp.index.tz is not None else sp.index
+            for data, fator in sp.items():
+                if fator > 1:
+                    antes, depois = eps[eps.index < data], eps[eps.index >= data]
+                    if len(antes) >= 2 and len(depois) >= 2 and \
+                            antes.iloc[-4:].abs().mean() / max(depois.iloc[:4].abs().mean(), 1e-9) > fator / 2:
+                        eps[eps.index < data] = eps[eps.index < data] / fator
+        except Exception:
+            pass
+        ttm = eps.rolling(4).sum().dropna()
+        if len(ttm) >= 2 and ttm.iloc[-1] > 0:
+            c = h["Close"]
+            e = ttm.reindex(c.index.union(ttm.index)).ffill().reindex(c.index)
+            pe = (c / e)[e > 0].dropna()
+            pe = pe[(pe > 0) & (pe < 300)]
+            if len(pe) > 60:
+                return float(ttm.iloc[-1] * pe.median()), "P/E"
+    except Exception:
+        pass
+    if REF is not None:                         # numa data passada não há o lucro e o valor contabilístico dessa data
+        return None, None
+    eps1, bv = info.get("trailingEps"), info.get("bookValue")
+    if eps1 and bv and eps1 > 0 and bv > 0 and preco:
+        g = float(np.sqrt(22.5 * eps1 * bv))
+        if g < preco / 20:
+            g *= 100                            # Londres: lucros em libras, preço em pence
+        elif g > preco * 20:
+            g /= 100
+        if preco / 20 < g < preco * 20:
+            return g, "Graham"
+    return None, None
+
+
+def alvo_em(tk, data):
+    """Preço-alvo médio dos analistas numa data passada, a partir do histórico de alterações do Yahoo
+    (upgrades_downgrades): para cada corretora, o último preço-alvo dado nos 12 meses antes da data. (alvo, nº)."""
+    import pandas as pd
+    try:
+        ud = tk.upgrades_downgrades
+        if ud is None or not len(ud):
+            return None, None
+        ud = ud.copy()
+        if "GradeDate" in ud.columns:
+            ud = ud.set_index("GradeDate")
+        ud.index = pd.to_datetime(ud.index)
+        if ud.index.tz is not None:
+            ud.index = ud.index.tz_localize(None)
+        col = next((c for c in ud.columns if c.lower() in ("currentpricetarget", "pricetarget")), None)
+        firma = next((c for c in ud.columns if c.lower() == "firm"), None)
+        if not col or not firma:
+            return None, None
+        t = pd.Timestamp(data)
+        w = ud[(ud.index <= t) & (ud.index > t - pd.Timedelta(days=365))]
+        w = w[pd.to_numeric(w[col], errors="coerce") > 0].sort_index()
+        if not len(w):
+            return None, None
+        ult = w.groupby(firma)[col].last().astype(float)
+        if len(ult) < 2:
+            return None, None
+        return float(ult.mean()), int(len(ult))
+    except Exception:
+        return None, None
+
+
+def _num(v):
+    try:
+        v = float(v)
+        return None if v != v else v      # NaN -> None
+    except (TypeError, ValueError):
+        return None
+
+
+def taxas_eur(moedas):
+    """Câmbio para euros de cada moeda do Yahoo: (taxa da moeda principal, taxa do preço). Em Londres (GBp), Joanesburgo
+    (ZAc) e Telavive (ILA) o preço vem em cêntimos, mas a capitalização vem na moeda principal."""
+    import yfinance as yf
+    menor = {"GBp": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
+    pedir = sorted({menor.get(m, m) for m in moedas if m and menor.get(m, m) != "EUR"})
+    tx = {"EUR": 1.0}
+    if pedir:
+        try:
+            h = yf.download([f"{m}EUR=X" for m in pedir], period="10d", progress=False, auto_adjust=True, threads=True)
+            fecho = h["Close"]
+            for m in pedir:
+                col = f"{m}EUR=X"
+                if col in fecho and fecho[col].dropna().size:
+                    tx[m] = float(fecho[col].dropna().iloc[-1])
+        except Exception as e:
+            print("Aviso: sem câmbios para euros:", e)
+    out = {}
+    for m in moedas:
+        t = tx.get(menor.get(m, m)) if m else None
+        out[m] = (t, t / 100 if (t and m in menor) else t)
+    return out
+
+
+SESSOES = {"pre": "pré-abertura", "regular": "sessão normal", "post": "pós-fecho"}
+
+
+def preco_mais_recente(info, ultimo):
+    """O preço mais recente que o Yahoo tem: sessão normal, pré-abertura ou pós-fecho (EUA), o que for mais recente.
+    Devolve (preço, "sessão dd/mm hh:mm", fecho de referência para a variação do dia)."""
+    cand = []
+    for chave, preco, hora in (("regular", info.get("regularMarketPrice") or info.get("currentPrice"), info.get("regularMarketTime")),
+                               ("pre", info.get("preMarketPrice"), info.get("preMarketTime")),
+                               ("post", info.get("postMarketPrice"), info.get("postMarketTime"))):
+        if _num(preco):
+            cand.append((_num(hora) or 0, chave, float(preco)))
+    if not cand:
+        return ultimo, ("último fecho" if ultimo else None), None
+    hora, sessao, preco = max(cand)                     # o mais recente
+    texto = SESSOES[sessao] + (f" {datetime.fromtimestamp(hora):%d/%m %H:%M}" if hora else "")
+    # variação do dia: pré-abertura face ao último fecho; sessão normal e pós-fecho face ao fecho anterior
+    ref = info.get("regularMarketPrice") if sessao == "pre" else info.get("regularMarketPreviousClose")
+    return preco, texto, _num(ref)
+
+
+def indicadores(fechos):
+    """PPO 12/26 com sinal 9 e histograma, variação do histograma em 5 dias, RSI 14 (Wilder), média de 200 dias,
+    preço / média 200 dias e momentum 12 meses sem o último mês. Tudo a partir dos fechos diários."""
+    c = fechos.dropna().astype(float)
+    out = {}
+    if len(c) < 40:
+        return out
+    e12, e26 = c.ewm(span=12, adjust=False).mean(), c.ewm(span=26, adjust=False).mean()
+    ppo = e12 / e26 - 1
+    sinal = ppo.ewm(span=9, adjust=False).mean()
+    hist = ppo - sinal
+    out.update(ppo=float(ppo.iloc[-1]), ppo_sinal=float(sinal.iloc[-1]), ppo_hist=float(hist.iloc[-1]),
+               ppo_dh=float(hist.iloc[-1] - hist.iloc[-6]) if len(hist) > 6 else None)
+    dif = c.diff()
+    ganho = dif.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    perda = (-dif.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    if perda.iloc[-1] > 0:
+        out["rsi"] = float(100 - 100 / (1 + ganho.iloc[-1] / perda.iloc[-1]))
+    elif ganho.iloc[-1] > 0:
+        out["rsi"] = 100.0
+    if len(c) >= 200:
+        mm = float(c.iloc[-200:].mean())
+        out.update(mm200=mm, dist200=float(c.iloc[-1] / mm - 1))
+    if len(c) >= 253:
+        out["mom12"] = float(c.iloc[-22] / c.iloc[-253] - 1)
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ bolsa preferida
+# Três modos (botões em cada folha; o escolhido fica guardado em FICH_MODO):
+#   base = cada título na bolsa da lista (sem trocas)
+#   eur  = de preferência numa bolsa europeia em euros (Xetra, Euronext...)
+#   eua  = de preferência numa bolsa americana (ações europeias: a ação ou o ADR nos EUA; os ETFs UCITS não têm
+#          equivalente nos EUA e ficam como estão)
+# Uma listagem só é aceite se o preço bater com o da bolsa principal (convertido; nos ADR, a um múltiplo de ações) e
+# se as variações semanais acompanharem as da principal. Os analistas, o valor justo, o volume e a capitalização vêm
+# sempre da bolsa principal e são convertidos. Nestes três modos, títulos repetidos (a mesma ação duas vezes) só
+# aparecem uma vez.
+#   todos = cada título em todas as bolsas encontradas: a da lista, a europeia em euros e a americana (uma linha cada)
+MODOS = {"base": "lista base", "eur": "privilegiar EUR", "eua": "privilegiar EUA", "todos": "todas as bolsas"}
+FICH_MODO = os.path.join(PASTA, BASE + "_modo.json")
+DIAS_REVER_EUR = 30          # volta a confirmar cada correspondência ao fim deste tempo
+FICH_EUR = os.path.join(PASTA, BASE + "_bolsas.json")
+SUF_EUR = {".DE": "Xetra", ".F": "Frankfurt", ".AS": "Euronext Amesterdão", ".PA": "Euronext Paris",
+           ".BR": "Euronext Bruxelas", ".LS": "Euronext Lisboa", ".MI": "Borsa Italiana", ".MC": "Bolsa de Madrid",
+           ".VI": "Viena", ".HE": "Helsínquia", ".IR": "Dublin", ".MU": "Munique", ".SG": "Estugarda",
+           ".BE": "Berlim", ".DU": "Düsseldorf", ".HM": "Hamburgo"}
+PREF_SUF = [".DE", ".AS", ".PA", ".MI", ".MC", ".BR", ".LS", ".F", ".MU", ".SG", ".BE", ".DU", ".HM", ".VI", ".HE", ".IR"]
+MOEDA_SUF = {".L": "GBp", ".SW": "CHF", ".CO": "DKK", ".OL": "NOK", ".ST": "SEK"}
+RATIOS_ADR = [0.1, 0.2, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10]
+# palpites (confirmados antes de serem usados; se falharem, procura-se no Yahoo)
+CANDIDATOS = {"eur": {
+    "AAPL": "APC.DE", "MSFT": "MSF.DE", "NVDA": "NVD.DE", "AMZN": "AMZ.DE", "GOOGL": "ABEA.DE", "META": "FB2A.DE",
+    "TSLA": "TL0.DE", "AVGO": "1YD.DE", "BRK-B": "BRYN.DE", "JPM": "CMC.DE", "V": "3V64.DE", "MA": "M4I.DE",
+    "LLY": "LLY.DE", "UNH": "UNH.DE", "XOM": "XONA.DE", "CVX": "CHV.DE", "JNJ": "JNJ.DE", "PG": "PRG.DE",
+    "WMT": "WMT.DE", "COST": "CTO.DE", "HD": "HDI.DE", "ORCL": "ORC.DE", "NFLX": "NFC.DE", "AMD": "AMD.DE",
+    "BAC": "NCB.DE", "KO": "CCC3.DE", "PEP": "PEP.DE", "MRK": "6MK.DE", "ABBV": "4AB.DE", "CRM": "FOO.DE",
+    "ADBE": "ADB.DE", "CSCO": "CIS.DE", "INTC": "INL.DE", "QCOM": "QCI.DE", "PLTR": "PTX.DE", "UBER": "UT8.DE",
+    "BA": "BCO.DE", "DIS": "WDP.DE", "NKE": "NKE.DE", "MCD": "MDO.DE", "IBM": "IBM.DE", "PFE": "PFE.DE",
+    "MU": "MTE.DE", "GS": "GOS.DE", "CAT": "CAT1.DE", "WFC": "NWT.DE", "TSM": "TSFA.DE",
+    "SHEL.L": "SHELL.AS", "ULVR.L": "UNA.AS", "AZN.L": "ZEG.DE", "HSBA.L": "HBC1.DE", "BP.L": "BPE5.DE",
+    "RIO.L": "RIO1.DE", "GSK.L": "GS7.DE", "NESN.SW": "NESR.DE", "NOVN.SW": "NOT.DE", "ROP.SW": "RHO6.DE",
+    "UBSG.SW": "0UB.DE", "ABBN.SW": "ABJ.DE", "NOVO-B.CO": "NOV.DE", "EQNR.OL": "DNQ.DE", "VOLV-B.ST": "VOL3.DE",
+    "ERIC-B.ST": "ERCB.DE", "ATCO-A.ST": "ATC.DE"},
+  "eua": {
+    "SAP.DE": "SAP", "ASML.AS": "ASML", "SHEL.L": "SHEL", "AZN.L": "AZN", "HSBA.L": "HSBC", "ULVR.L": "UL",
+    "BP.L": "BP", "RIO.L": "RIO", "GSK.L": "GSK", "DGE.L": "DEO", "BATS.L": "BTI", "REL.L": "RELX", "BARC.L": "BCS",
+    "LLOY.L": "LYG", "NOVO-B.CO": "NVO", "NOVN.SW": "NVS", "UBSG.SW": "UBS", "TTE.PA": "TTE", "SAN.PA": "SNY",
+    "INGA.AS": "ING", "PHIA.AS": "PHG", "ABI.BR": "BUD", "BBVA.MC": "BBVA", "SAN.MC": "SAN", "TEF.MC": "TEF",
+    "ENI.MI": "E", "RACE.MI": "RACE", "STLAM.MI": "STLA", "EQNR.OL": "EQNR", "ERIC-B.ST": "ERIC", "NOKIA.HE": "NOK",
+    "DBK.DE": "DB", "NESN.SW": "NSRGY", "ROP.SW": "RHHBY", "ABBN.SW": "ABBNY", "MC.PA": "LVMUY", "OR.PA": "LRLCY",
+    "SIE.DE": "SIEGY", "ALV.DE": "ALIZY", "DTE.DE": "DTEGY", "AIR.PA": "EADSY", "SU.PA": "SBGSY", "RMS.PA": "HESAY",
+    "MBG.DE": "MBGYY", "BMW.DE": "BMWYY", "VOW3.DE": "VWAGY", "BAS.DE": "BASFY", "BAYN.DE": "BAYRY",
+    "IFX.DE": "IFNNY", "ADS.DE": "ADDYY", "IBE.MC": "IBDRY", "ITX.MC": "IDEXY", "ENEL.MI": "ENLAY",
+    "UCG.MI": "UNCRY", "ISP.MI": "ISNPY", "PRX.AS": "PROSY", "ADYEN.AS": "ADYEY", "HEIA.AS": "HEINY",
+    "AD.AS": "ADRNY", "CS.PA": "AXAHY", "BNP.PA": "BNPQY", "AI.PA": "AIQUY", "EL.PA": "ESLOY", "SAF.PA": "SAFRY",
+    "EDP.LS": "EDPFY", "GALP.LS": "GLPEY", "JMT.LS": "JRONY", "ZURN.SW": "ZURVY", "CFR.SW": "CFRUY",
+    "ATCO-A.ST": "ATLKY", "VOLV-B.ST": "VLVLY", "RR.L": "RYCEY", "BA.L": "BAESY", "GLEN.L": "GLNCY",
+    "LSEG.L": "LNSTY", "RHM.DE": "RNMBY", "DB1.DE": "DBOEY", "WKL.AS": "WTKWY", "MUV2.DE": "MURGY"}}
+
+
+def sufixo(t):
+    t = str(t).upper()
+    return t[t.rfind("."):] if "." in t else ""
+
+
+def em_euros(t):
+    return sufixo(t) in SUF_EUR
+
+
+def nos_eua(t):
+    return sufixo(t) == ""
+
+
+def moeda_prevista(t):
+    """Moeda do preço pelo sufixo do ticker (sem sufixo = EUA, dólares)."""
+    s = sufixo(t)
+    return "EUR" if s in SUF_EUR else MOEDA_SUF.get(s, "USD" if not s else None)
+
+
+def nome_bolsa(t):
+    return "EUA" if nos_eua(t) else SUF_EUR.get(sufixo(t), sufixo(t))
+
+
+def modo_atual():
+    try:
+        with open(FICH_MODO, encoding="utf-8") as f:
+            m = json.load(f).get("modo")
+        return m if m in MODOS else "eur"
+    except Exception:
+        return "eur"
+
+
+def guardar_modo(m):
+    try:
+        with open(FICH_MODO, "w", encoding="utf-8") as f:
+            json.dump({"modo": m, "data": f"{datetime.now():%d/%m/%Y %H:%M}"}, f)
+    except Exception:
+        pass
+
+
+def fonte_analistas(yf, nome, ticker, preco, moeda):
+    """Listagem principal (com analistas) da mesma ação, procurada pelo nome e confirmada pelo preço (±5%, ou um
+    múltiplo nos ADR). Guardada em FICH_EUR ("principal"), revista de DIAS_REVER_EUR em DIAS_REVER_EUR dias."""
+    try:
+        with open(FICH_EUR, encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+    cp = cache.setdefault("principal", {})
+    v = cp.get(ticker)
+    if v and (datetime.now() - datetime.strptime(v.get("data", "01/01/2000"), "%d/%m/%Y")).days <= DIAS_REVER_EUR:
+        return v.get("alt")
+    escolha = None
+    try:
+        ref = preco * (taxas_eur({moeda}).get(moeda, (None, None))[1] or 0)
+        quotes = yf.Search(nome, max_results=15, news_count=0, lists_count=0).quotes or []
+        cand = [q["symbol"] for q in quotes if q.get("quoteType") == "EQUITY" and q.get("symbol")
+                and q["symbol"].upper() != ticker.upper()][:6]
+        for c in cand:
+            inf = yf.Ticker(c).info or {}
+            p = _num(inf.get("regularMarketPrice") or inf.get("currentPrice"))
+            if not (p and inf.get("targetMeanPrice") and ref):
+                continue
+            m = inf.get("currency")
+            r = p * (taxas_eur({m}).get(m, (None, None))[1] or 0) / ref
+            if r and min(abs(r / k - 1) for k in RATIOS_ADR) < 0.05:
+                escolha = c
+                break
+    except Exception:
+        escolha = None
+    cp[ticker] = {"alt": escolha, "data": datetime.now().strftime("%d/%m/%Y")}
+    try:
+        with open(FICH_EUR, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    if escolha:
+        print(f"   {ticker}: analistas e valor justo vêm de {escolha} (bolsa principal)")
+    return escolha
+
+
+def bolsas_alt(titulos, modo=None):
+    """{ticker da lista: ticker a usar} conforme o modo (só os que mudam). Cache em FICH_EUR, por modo."""
+    modo = modo or modo_atual()
+    if modo in ("base", "todos"):          # todos: o recolher pede as duas (eur e eua) à parte; aqui, a da lista
+        return {}
+    import yfinance as yf
+    alvo_ok = em_euros if modo == "eur" else nos_eua
+    try:
+        with open(FICH_EUR, encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+    cm = cache.setdefault(modo, {})
+    hoje = datetime.now()
+    fora = [(n, t, etf) for n, c, t, b, etf in titulos if not alvo_ok(t) and moeda_prevista(t)
+            and not (modo == "eua" and etf)]
+    rever = [(n, t) for n, t, _ in fora if t not in cm or
+             (hoje - datetime.strptime(cm[t].get("data", "01/01/2000"), "%d/%m/%Y")).days > DIAS_REVER_EUR]
+    if rever:
+        print(f"A procurar a mesma ação na bolsa preferida ({MODOS[modo]}) para {len(rever)} títulos "
+              f"(só de {DIAS_REVER_EUR} em {DIAS_REVER_EUR} dias)...")
+        cand = {}
+        for nome, t in rever:
+            c = [CANDIDATOS[modo][t.upper()]] if t.upper() in CANDIDATOS[modo] else []
+            try:
+                for q in yf.Search(nome, max_results=20, news_count=0, lists_count=0).quotes or []:
+                    sym = q.get("symbol") or ""
+                    if alvo_ok(sym) and q.get("quoteType") in ("EQUITY", "ETF") and sym not in c:
+                        c.append(sym)
+            except Exception:
+                pass
+            cand[t] = c[:8]
+            time.sleep(0.2)
+        todos = sorted({x for v in cand.values() for x in v} | {t for _, t in rever})
+        try:
+            h = _por_ticker(yf.download(todos, period="3mo", interval="1d", group_by="ticker", auto_adjust=False,
+                                        threads=True, progress=False), todos)
+        except Exception as e:
+            print("Aviso: não consegui confirmar as outras bolsas:", e)
+            h = {}
+        tx = taxas_eur({moeda_prevista(t) for _, t in rever} | {"USD"} | {moeda_prevista(x) for v in cand.values()
+                                                                             for x in v})
+        for nome, t in rever:
+            escolha, melhor = None, 0.0
+            try:
+                base = h[t].dropna(subset=["Close"])
+                for x in cand.get(t, []):
+                    try:
+                        hx = h[x].dropna(subset=["Close"])
+                        if len(hx) < 10:
+                            continue
+                        f_x = tx.get(moeda_prevista(x), (None, None))[1]
+                        # em Londres há ETFs cotados em dólares: aceita-se o câmbio que bater (pence ou dólares)
+                        r = None
+                        for m in {moeda_prevista(t), "USD"}:
+                            f_t = tx.get(m, (None, None))[1]
+                            if f_x and f_t:
+                                rr = float(hx["Close"].iloc[-1]) * f_x / (float(base["Close"].iloc[-1]) * f_t)
+                                k = min(RATIOS_ADR if modo == "eua" else [1], key=lambda q: abs(rr / q - 1))
+                                if r is None or abs(rr / k - 1) < abs(r - 1):
+                                    r = rr / k
+                        sem = lambda s: s["Close"].resample("W").last().pct_change().dropna()
+                        a, b = sem(base).align(sem(hx), join="inner")
+                        corr = float(a.corr(b)) if len(a) >= 6 else 0.0
+                        neg = float((hx["Close"] * hx["Volume"].fillna(0)).mean()) * (f_x or 1)
+                        bonus = (len(PREF_SUF) - PREF_SUF.index(sufixo(x))) if sufixo(x) in PREF_SUF else 0
+                        nota = neg * (1 + bonus / 4)
+                        if r is not None and 0.95 < r < 1.05 and corr > 0.6 and nota >= melhor:
+                            escolha, melhor = x, nota
+                    except Exception:
+                        continue
+            except Exception:
+                escolha = None
+            cm[t] = {"alt": escolha, "data": hoje.strftime("%d/%m/%Y")}
+            print(f"   {t:12} -> {escolha or '(fica a da lista)'}")
+        try:
+            with open(FICH_EUR, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+    return {t: cm[t]["alt"] for _, t, _ in fora if cm.get(t, {}).get("alt")}
+
+
+# Saúde financeira e qualidade do negócio (só ações; dados do Yahoo: últimos 12 meses e último relatório anual).
+# Pontos graduais (0 a 1 por critério, em linha reta entre "mau" e "bom"), nota = 5 × média dos critérios com dados:
+#   QUALIDADE (o negócio): ROIC 5% → 15% · lucro bruto / ativo 10% → 30% · FCF / lucro 0,5 → 0,9 (precisa de 2 dos 3).
+#     O preço (FCF yield, EV/EBITDA) fica fora: já está na pontuação (valor justo e analistas); só se mostra.
+#   SAÚDE: dívida líquida / EBITDA 3× → 1× (utilities e imobiliárias 5× → 2×; com mais caixa do que dívida = 1)
+#     · EBIT / juros 3× → 8× (sem juros = 1) · FCF positivo = 1, negativo com caixa líquida = 0,5, negativo com dívida = 0.
+#   ALERTA (basta um): dívida acima do limite "mau", juros abaixo de 3×, FCF negativo com dívida, EBITDA negativo com
+#     dívida -> a nota global não passa de 2.5.
+# NOTA GLOBAL = 75% pontuação + 12,5% qualidade + 12,5% saúde (o que faltar, p. ex. nos ETFs e nos bancos, conta como a
+#   pontuação). Bancos, seguradoras e financeiras: qualidade e saúde não se aplicam.
+PESO_PONT, PESO_QUAL, PESO_SAUDE, NOTA_ALERTA = 0.75, 0.125, 0.125, 2.5
+PESO_ETF_ACOES = 0.25
+
+
+def decisao_global(d):
+    """Decisão pela nota global, sem contrariar o sinal: só há compra se a pontuação do sinal for ≥ 3 (e então o
+    nível vem da nota global: ≥ 4,5 forte, ≥ 3,75 média, ≥ 2,75 compra, abaixo disso manter); venda se o sinal for 1."""
+    p, nt = d.get("pont"), d.get("nota")
+    if not isinstance(p, (int, float)):
+        return None
+    alerta = txt(d.get("saude")).startswith("ALERTA")
+    if p == 1:
+        return NIVEIS[1]
+    if p == 2.5:
+        return NIVEIS[2.5] + (" + saúde frágil" if alerta else "")
+    if p < 3:
+        return "Manter (venda próxima)" if d.get("_vprox") else NIVEIS[2]
+    if alerta:
+        return "Saúde frágil"
+    nt = nt if isinstance(nt, (int, float)) else p
+    nivel = 5 if nt >= 4.5 else 4 if nt >= 3.75 else 3 if nt >= 2.75 else None
+    if nivel is None:
+        return "Manter (qualidade / saúde fracas)"
+    return NIVEIS[nivel] + (" (antecipada)" if d.get("_cprox") else "")
+
+
+def nota_global(d):
+    """Ações: 75% pontuação + 12,5% qualidade + 12,5% saúde. ETFs: 75% pontuação + 25% nota ponderada das ações.
+    O que faltar conta como a pontuação. Travões: saúde em alerta ou longo prazo fraco -> no máx. 2,5."""
+    n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    p = n("pont")
+    if p is None:
+        return None
+    if txt(d.get("tipo")) == "ETF":
+        ea = n("etf_acoes")
+        nota = (1 - PESO_ETF_ACOES) * p + PESO_ETF_ACOES * (ea if ea is not None else p)
+    else:
+        q, sn = n("qual"), n("saude_n")
+        nota = PESO_PONT * p + PESO_QUAL * (q if q is not None else p) + PESO_SAUDE * (sn if sn is not None else p)
+    lp = n("lp")
+    if txt(d.get("saude")).startswith("ALERTA") or (lp is not None and lp < LP_MIN):
+        nota = min(nota, NOTA_ALERTA)
+    return round(nota, 2)
+Q_ROIC, Q_GPA, Q_FCFL = (0.05, 0.15), (0.10, 0.30), (0.5, 0.9)
+S_DIV, S_DIV_REG, S_JUROS = (3.0, 1.0), (5.0, 2.0), (3.0, 8.0)
+SETORES_REG = ("Real Estate", "Utilities")
+
+
+def _grad(v, mau, bom):
+    """0 no 'mau', 1 no 'bom', em linha reta entre os dois (funciona nos dois sentidos)."""
+    if v is None:
+        return None
+    return max(0.0, min(1.0, (v - mau) / (bom - mau)))
+
+
+_CAMBIO = {}
+
+
+def fundamentos(tk, info, moeda_cap):
+    """Indicadores de saúde e qualidade de uma ação (dicionário com as chaves das colunas)."""
+    num = _num
+    out = {}
+    setor, ind = txt(info.get("sector")), txt(info.get("industry"))
+    if setor in ("Financial Services", "Financial") and "Data" not in ind:
+        out["saude"] = "não se aplica (setor financeiro: banco, seguro ou financeira)"
+        return out
+    menor = {"GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
+    fin = menor.get(txt(info.get("financialCurrency")), txt(info.get("financialCurrency"))) or None
+    mc = menor.get(moeda_cap, moeda_cap) or None
+    cap = num(info.get("marketCap"))
+    if cap and fin and mc and fin != mc:                       # capitalização -> moeda das contas
+        falta = {m for m in (fin, mc) if m not in _CAMBIO}
+        if falta:
+            _CAMBIO.update({m: v[0] for m, v in taxas_eur(falta).items()})
+        r1, r2 = _CAMBIO.get(mc), _CAMBIO.get(fin)
+        cap = cap * r1 / r2 if (r1 and r2) else None
+
+    def ultimo(df, nomes):
+        try:
+            for n in nomes:
+                if df is not None and n in df.index:
+                    v = df.loc[n].dropna()
+                    if len(v):
+                        return float(v.iloc[0])
+        except Exception:
+            pass
+        return None
+    def relatorio(nome):
+        for tent in range(2):
+            try:
+                return getattr(tk, nome)
+            except Exception:
+                time.sleep(2)
+        return None
+    inc, bs, cf = relatorio("income_stmt"), relatorio("balance_sheet"), relatorio("cashflow")
+    ebitda, ni = num(info.get("ebitda")), num(info.get("netIncomeToCommon"))
+    # FCF e lucro do último relatório anual (os dois do mesmo ano); o "freeCashflow" do Yahoo é o FCF "levered",
+    # que às vezes fica muito abaixo do real (na Nvidia dava FCF/lucro 0,2) -> só se usa se faltar o relatório
+    fcf_a = ultimo(cf, ["Free Cash Flow"])
+    if fcf_a is None:
+        ocf, capex = ultimo(cf, ["Operating Cash Flow"]), ultimo(cf, ["Capital Expenditure"])
+        fcf_a = ocf + capex if (ocf is not None and capex is not None) else None
+    ni_a = ultimo(inc, ["Net Income", "Net Income Common Stockholders"])
+    fcf = fcf_a if fcf_a is not None else num(info.get("freeCashflow"))
+    if fcf_a is not None and ni_a is not None:
+        ni = ni_a
+    divida, caixa = num(info.get("totalDebt")), num(info.get("totalCash"))
+    ebit = ultimo(inc, ["EBIT", "Operating Income"])
+    juros = ultimo(inc, ["Interest Expense", "Interest Expense Non Operating"])
+    bruto = ultimo(inc, ["Gross Profit"]) or num(info.get("grossProfits"))
+    imp, antes = ultimo(inc, ["Tax Provision"]), ultimo(inc, ["Pretax Income"])
+    ativo = ultimo(bs, ["Total Assets"])
+    capital = ultimo(bs, ["Invested Capital"])
+    if divida is None:
+        divida = ultimo(bs, ["Total Debt"])
+    if caixa is None:
+        caixa = ultimo(bs, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
+    if not capital:
+        cp = ultimo(bs, ["Stockholders Equity", "Common Stock Equity"])
+        capital = (cp + (divida or 0) - (caixa or 0)) if cp is not None else None
+    liquida = (divida or 0) - (caixa or 0) if (divida is not None or caixa is not None) else None
+    taxa = min(max(imp / antes, 0.0), 0.35) if (imp is not None and antes and antes > 0) else 0.21
+    if ebit is not None and capital and capital > 0:
+        out["roic"] = ebit * (1 - taxa) / capital
+    if bruto is not None and ativo:
+        out["gpa"] = bruto / ativo
+    if fcf is not None and ni and ni > 0:
+        out["fcf_lucro"] = fcf / ni
+    if fcf is not None and cap:
+        out["fcf_yield"] = fcf / cap
+    if cap and ebitda and ebitda > 0:
+        out["ev_ebitda"] = (cap + (liquida or 0)) / ebitda
+    if liquida is not None and ebitda and ebitda > 0:
+        out["divl_ebitda"] = liquida / ebitda
+    if ebit is not None and juros and abs(juros) > 0:
+        out["ebit_juros"] = ebit / abs(juros)
+    # saúde (gradual) e alerta
+    regulada = setor in SETORES_REG
+    mau_d, bom_d = S_DIV_REG if regulada else S_DIV
+    pts, alerta, ok = [], [], []
+    dv, cob = out.get("divl_ebitda"), out.get("ebit_juros")
+    fmt = lambda v: f"{v:.1f}".replace(".", ",")
+    if liquida is not None and liquida <= 0:
+        pts.append(1.0)
+        ok.append("mais caixa do que dívida")
+    elif dv is not None:
+        pts.append(_grad(dv, mau_d, bom_d))
+        (alerta if dv > mau_d else ok).append(f"dívida líq. {fmt(dv)}× EBITDA" + (" (setor regulado)" if regulada else ""))
+    elif ebitda is not None and ebitda <= 0 and liquida and liquida > 0:
+        pts.append(0.0)
+        alerta.append("EBITDA negativo com dívida")
+    if cob is not None:
+        pts.append(_grad(cob, *S_JUROS))
+        (alerta if cob < S_JUROS[0] else ok).append(f"juros cobertos {fmt(cob)}×")
+    elif ebit is not None and juros is not None and abs(juros) == 0:
+        pts.append(1.0)
+        ok.append("sem juros")
+    if fcf is not None:
+        caixa_liq = liquida is not None and liquida <= 0
+        pts.append(1.0 if fcf >= 0 else 0.5 if caixa_liq else 0.0)
+        if fcf >= 0:
+            ok.append("FCF positivo")
+        elif caixa_liq:
+            ok.append("FCF negativo, mas com caixa líquida")
+        else:
+            alerta.append("FCF negativo com dívida")
+    if pts:
+        out["saude_n"] = round(5 * sum(pts) / len(pts), 1)
+    if alerta:
+        out["saude"] = "ALERTA: " + "; ".join(alerta) + ((" (" + "; ".join(ok) + ")") if ok else "")
+    elif ok:
+        out["saude"] = "OK: " + "; ".join(ok)
+    else:
+        out["saude"] = "sem dados no Yahoo"
+    # qualidade do negócio (gradual)
+    q = [x for x in (_grad(out.get("roic"), *Q_ROIC), _grad(out.get("gpa"), *Q_GPA), _grad(out.get("fcf_lucro"), *Q_FCFL))
+         if x is not None]
+    if len(q) >= 2:
+        out["qual"] = round(5 * sum(q) / len(q), 1)
+    return out
+
+
+def detalhe_qualidade(d):
+    """Texto curto: os 3 critérios do negócio (pontos 0-1) e, à parte, o preço (FCF yield, EV/EBITDA)."""
+    n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    partes = []
+    for k, rot, lim, f in (("roic", "ROIC", Q_ROIC, "{:.0%}"), ("gpa", "bruto/ativo", Q_GPA, "{:.0%}"),
+                           ("fcf_lucro", "FCF/lucro", Q_FCFL, "{:.1f}")):
+        v = n(k)
+        if v is not None:
+            partes.append(f"{rot} {f.format(v)} = {_grad(v, *lim):.1f}".replace(".", ","))
+    preco = [f"FCF yield {n('fcf_yield'):.1%}".replace(".", ",") if n("fcf_yield") is not None else None,
+             f"EV/EBITDA {n('ev_ebitda'):.0f}×" if n("ev_ebitda") is not None else None]
+    preco = [x for x in preco if x]
+    return ", ".join(partes) + ((" · preço: " + ", ".join(preco)) if preco else "")
+
+
+# ---------- composição dos ETFs ----------
+# O Yahoo dá a descrição e as maiores posições (até 10) de muitos ETFs; nos UCITS europeus falta muitas vezes. Nesse
+# caso usa-se um ETF americano do mesmo índice (só para a composição, indicado no texto). Obrigações e ouro: não.
+COMPOSICAO = {}       # ticker do ETF -> {"desc": str, "hold": [[símbolo, nome, peso], ...], "proxy": str|None}
+PROXY_ETF = [("health care", "XLV"), ("information technology", "XLK"), ("semicond", "SMH"),
+             ("automation & robotics", "BOTZ"), ("nasdaq 100", "QQQ"), ("nasdaq-100", "QQQ"),
+             ("small cap value", "VBR"), ("world small cap", "VSS"), ("s&p 500", "VOO"),
+             ("high dividend", "VYMI"), ("all-world", "VT"), ("all country world", "ACWI"), ("acwi", "ACWI"),
+             ("msci world", "URTH"), ("emerging", "VWO"), ("japan", "EWJ"), ("euro stoxx 50", "FEZ"),
+             ("stoxx europe 600", "VGK"), ("developed europe", "VGK"), ("msci europe", "VGK"), ("dax", "EWG"),
+             ("cac 40", "EWQ"), ("ftse 100", "EWU"), ("smi", "EWL"), ("ibex", "EWP"), ("ftse mib", "EWI"),
+             ("aex", "EWN"), ("omxs30", "EWD")]
+SEM_ACOES = ("bond", "obrigaç", "treasury", "gold", "ouro", "govern")
+FICH_COMP = os.path.join(PASTA, BASE + "_composicao_etfs.json")
+FICH_ACOES_ETF = os.path.join(PASTA, BASE + "_acoes_dos_etfs.json")
+
+
+def _ler_json(f, vazio):
+    try:
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return vazio
+
+
+def _gravar_json(f, dados):
+    try:
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(dados, fh, ensure_ascii=False, indent=1)
+    except Exception as e:
+        print("   aviso: não foi possível gravar", os.path.basename(f), e)
+
+
+def composicao(yf, tk, ticker_orig, ticker, nome, info):
+    """Descrição curta e maiores posições de um ETF (do próprio, da listagem em euros ou de um ETF americano do mesmo
+    índice)."""
+    out = {"desc": None, "hold": [], "proxy": None}
+    nl = nome.lower()
+    sem_acoes = any(x in nl for x in SEM_ACOES)
+    proxy = None if sem_acoes else next((px for chave, px in PROXY_ETF if chave in nl), None)
+    cands = [(tk, None)] + ([(yf.Ticker(ticker), None)] if ticker != ticker_orig else []) + \
+        ([(yf.Ticker(proxy), proxy)] if proxy else [])
+    for t, px in cands:
+        desc = th = None
+        try:
+            fd = t.funds_data
+            desc = fd.description
+            th = fd.top_holdings
+        except Exception:
+            pass
+        if desc and not out["desc"] and px is None:
+            out["desc"] = desc
+        if sem_acoes or th is None or not len(th):
+            continue
+        hold = []
+        for sym, row in th.iterrows():
+            try:
+                w = float(row.get("Holding Percent"))
+            except Exception:
+                continue
+            sym = txt(sym)
+            if sym and w > 0 and " " not in sym and len(sym) <= 14:
+                hold.append([sym, txt(row.get("Name")) or sym, w])
+        if hold:
+            out["hold"], out["proxy"] = hold[:10], px
+            break
+    if not out["desc"]:
+        out["desc"] = txt(info.get("longBusinessSummary")) or None
+    if out["desc"]:                                        # breve: a 1.ª frase (até ~220 caracteres)
+        dd = re.split(r"(?<=[.!?])\s", out["desc"].strip())[0]
+        out["desc"] = dd if len(dd) <= 220 else dd[:217].rsplit(" ", 1)[0] + "…"
+    return out
+
+
+def _chaves_acao(d):
+    """Símbolos pelos quais uma ação da folha Ranking pode aparecer na composição de um ETF."""
+    ch = {txt(d.get("codigo")).upper(), txt(d.get("ticker")).upper()}
+    m = re.search(r"principal: .* (\S+)$", txt(d.get("bolsa")))
+    if m:
+        ch.add(m.group(1).upper())
+    ch |= {c.split(".")[0] for c in ch if c}
+    return {c for c in ch if c}
+
+
+def _acao_de(sym, indice, nome=None):
+    s = sym.upper()
+    return indice.get(s) or indice.get(s.split(".")[0]) or (indice.get(_nome_chave(nome)) if nome else None)
+
+
+REPETIDOS = set()        # tickers que o recolher deixou de fora por serem a mesma empresa de outro título
+
+
+_SEM_NOME = {"the", "inc", "corp", "corporation", "co", "company", "class", "and", "sa", "nv", "plc", "ag", "se", "ltd",
+             "limited", "spa", "ab", "asa", "as", "oyj", "a", "b", "c", "adr", "ord", "shs", "reg", "registered", "nom",
+             "de", "pref", "com", "holdings", "holding", "group", "the"}
+
+
+def _nome_chave(n):
+    """Nome sem formas jurídicas nem classes (para reconhecer a mesma empresa com outro ticker, p. ex. GOOG / GOOGL)."""
+    w = [x for x in re.findall(r"[a-z0-9]+", txt(n).lower()) if x not in _SEM_NOME]
+    return ("nome:" + " ".join(w)) if w else None
+
+
+def acoes_em_falta(linhas, etfs, comp):
+    """Ações das composições dos ETFs que não estão na folha Ranking: [(nome, código, ticker, bolsa), ...]."""
+    indice = {}
+    for d in linhas:
+        for c in _chaves_acao(d) | {_nome_chave(d.get("nome"))} - {None}:
+            indice.setdefault(c, d)
+    falta, vistos = [], {x.upper() for x in comp.get("_sem_dados", [])}   # sem dados no Yahoo: não se tenta outra vez
+    for e in etfs:
+        c = comp.get(txt(e.get("ticker"))) or comp.get(txt(e.get("_orig")))
+        for sym, nm, w in (c or {}).get("hold", []):
+            if _acao_de(sym, indice, nm) is None and sym.upper() not in vistos:
+                vistos.add(sym.upper())
+                falta.append((nm, sym.split(".")[0], sym, nome_bolsa(sym)))
+    return falta
+
+
+def ponderar_etfs(linhas, etfs, comp):
+    """Nota ponderada das ações de cada ETF (notas globais da folha Ranking, pesadas pelo peso no ETF), descrição e
+    composição; recalcula a nota global dos ETFs."""
+    indice = {}
+    for d in linhas:
+        for c in _chaves_acao(d) | {_nome_chave(d.get("nome"))} - {None}:
+            indice.setdefault(c, d)
+    for e in etfs:
+        c = comp.get(txt(e.get("ticker"))) or comp.get(txt(e.get("_orig"))) or {}
+        if c.get("desc"):
+            e["etf_desc"] = c["desc"]
+        partes, soma_w, soma_wn, total = [], 0.0, 0.0, 0.0
+        for sym, nm, w in c.get("hold", []):
+            total += w
+            a = _acao_de(sym, indice, nm)
+            nt = a.get("nota") if a is not None and isinstance(a.get("nota"), (int, float)) else None
+            if nt is not None:
+                soma_w += w
+                soma_wn += w * nt
+            partes.append(f"{nm} {w:.1%}".replace(".", ",") + (f" ({nt:.1f})".replace(".", ",") if nt is not None else ""))
+        if partes:
+            e["etf_comp"] = ((f"(aprox. pelo {c['proxy']}, mesmo índice) " if c.get("proxy") else "")
+                             + "; ".join(partes) + f" · estas {len(partes)}: {total:.0%} do ETF".replace(".", ","))
+        e["etf_acoes"] = round(soma_wn / soma_w, 2) if soma_w > 0 else None
+        e["nota"] = nota_global(e)
+        e["decisao"] = decisao_global(e)
+
+
+def dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, eur, tx_orig):
+    """Todos os dados de um título (uma linha do painel). hist: {ticker: velas diárias}."""
+    ticker = eur.get(ticker_orig) or ticker_orig        # ticker do preço (de preferência em euros)
+    h_orig = None
+    if ticker != ticker_orig:
+        try:
+            h_eu = hist[ticker].dropna(subset=["Close"])
+            h_orig = hist[ticker_orig].dropna(subset=["Close"])
+            if len(h_eu) < min(300, len(h_orig) - 20):    # história curta em euros: fica a bolsa principal
+                ticker, h_orig = ticker_orig, None
+        except Exception:
+            ticker, h_orig = ticker_orig, None
+    d = {"nome": nome, "tipo": "ETF" if etf else "Ação", "codigo": codigo, "ticker": ticker, "bolsa": bolsa}
+    lp = LONGO.get(ticker_orig) or LONGO.get(ticker)
+    if lp:
+        f = lambda v: f"{v:+.1%}".replace(".", ",")
+        d["lp"] = lp[0]
+        d["lp_txt"] = (f"{f(lp[2])}/ano desde {lp[1]}" + (f" ; 5 anos {f(lp[3])}/ano" if lp[3] is not None else "")
+                       + (f" ; 1 ano {f(lp[4])}" if lp[4] is not None else ""))
+    if ticker != ticker_orig:
+        d["bolsa"] = f"{nome_bolsa(ticker)} ({moeda_prevista(ticker)}) · principal: {bolsa} {ticker_orig}"
+    ultimo = None
+    h = None
+    try:
+        h = hist[ticker].dropna(subset=["Close"])
+        if len(h):
+            fim = h.index.max()
+            ultimo = float(h["Close"].iloc[-1])
+            for i, (_, dias) in enumerate(PERIODOS):
+                w = h[h.index > fim - timedelta(days=dias)]
+                mx, mn, med = float(w["High"].max()), float(w["Low"].min()), float(w["Close"].mean())
+                d.update({f"max{i}": mx, f"min{i}": mn, f"med{i}": med,
+                          f"cima{i}": mx / med - 1, f"baixo{i}": mn / med - 1})
+            cl = h["Close"]
+            d.update(indicadores(cl))
+            if len(cl) > 126:
+                d["ref6m"] = float(cl.iloc[-127])
+            if len(cl) >= 2:
+                d["var1d"] = float(cl.iloc[-1] / cl.iloc[-2] - 1)
+            mes = cl[cl.index <= fim - timedelta(days=30)]
+            if len(mes):
+                d["var1m"] = float(cl.iloc[-1] / mes.iloc[-1] - 1)
+            w3 = (h_orig if h_orig is not None else h).tail(63)   # negócio: o da bolsa principal
+            if "Volume" in w3:
+                d["volume"] = _num(w3["Volume"].mean())
+                d["_valor_local"] = _num((w3["Volume"] * w3["Close"]).mean())
+    except Exception:
+        pass
+    def ler_info(t):
+        for tent in range(3):
+            try:
+                return yf.Ticker(t).info or {}
+            except Exception:
+                time.sleep(2 * (tent + 1))
+        return {}
+    info = ler_info(ticker)
+    preco, d["preco_hora"], ref_dia = preco_mais_recente(info, ultimo)
+    if REF is not None and ultimo:                      # situação numa data passada: o preço é o fecho dessa data
+        agora = preco
+        preco, ref_dia = ultimo, None
+        d["preco_hora"] = f"fecho {h.index[-1]:%d/%m/%Y}"
+        if agora:
+            d["desde_ref"] = float(agora) / ultimo - 1
+    conv = 1.0                                          # bolsa principal -> euros (analistas e valor justo)
+    tk = yf.Ticker(ticker)
+    if ticker != ticker_orig:
+        info_p = info
+        info = ler_info(ticker_orig)                    # analistas, lucros e capitalização: bolsa principal
+        tk = yf.Ticker(ticker_orig)
+        moeda_o = info.get("currency") or moeda_prevista(ticker_orig)
+        preco_o = _num(info.get("regularMarketPrice") or info.get("currentPrice"))
+        if REF is not None and h_orig is not None and len(h_orig):
+            preco_o = float(h_orig["Close"].iloc[-1])   # numa data passada: os fechos dessa data
+        if preco and preco_o:                           # conversão pelos dois preços: câmbio e, nos ADR, o múltiplo
+            conv = float(preco) / preco_o
+        else:
+            if moeda_o not in tx_orig:
+                tx_orig.update(taxas_eur({moeda_o}))
+            conv = tx_orig.get(moeda_o, (None, None))[1] or 0
+        d["_moeda_neg"] = info.get("currency") or moeda_prevista(ticker_orig)
+        info = {**info, "currency": info_p.get("currency", "EUR")}
+    if not etf and preco and not info.get("targetMeanPrice"):
+        # sem analistas nesta listagem (p. ex. uma ação francesa acrescentada pela Xetra): procura a bolsa principal
+        princ = fonte_analistas(yf, nome, ticker_orig, float(preco), info.get("currency"))
+        if princ:
+            info_f = ler_info(princ)
+            preco_f = _num(info_f.get("regularMarketPrice") or info_f.get("currentPrice"))
+            if preco_f and info_f.get("targetMeanPrice"):
+                try:
+                    ini = ((REF or datetime.now()) - timedelta(days=max(d for _, d in PERIODOS) + 10))
+                    h_orig = yf.Ticker(princ).history(start=ini.strftime("%Y-%m-%d"), auto_adjust=False)
+                    if h_orig.index.tz is not None:
+                        h_orig.index = h_orig.index.tz_localize(None)
+                    if REF is not None:
+                        h_orig = h_orig[h_orig.index <= REF]
+                        preco_f = float(h_orig["Close"].iloc[-1]) if len(h_orig) else preco_f
+                except Exception:
+                    h_orig = None
+                tk, conv = yf.Ticker(princ), float(preco) / preco_f
+                d["_moeda_neg"] = info_f.get("currency")
+                info = {**info_f, "currency": info.get("currency")}
+                d["_fonte"] = princ
+    if preco and ref_dia:
+        d["var1d"] = float(preco) / ref_dia - 1
+    if etf:   # ETFs não têm preço-alvo nem recomendação de analistas
+        for chave in ("targetMeanPrice", "numberOfAnalystOpinions", "recommendationKey"):
+            info.pop(chave, None)
+    alvo = info.get("targetMeanPrice")
+    nota = ""
+    nanal = info.get("numberOfAnalystOpinions")
+    if REF is not None and not etf:                    # numa data passada: alvo reconstruído com o histórico
+        a_h, n_h = alvo_em(tk, REF)
+        if a_h:
+            alvo, nanal = a_h, n_h
+            nota = f"alvo de {REF:%d/%m/%Y} reconstruído ({n_h} corretoras)"
+        else:
+            nota = "alvo de hoje (o Yahoo não tem o histórico dos analistas deste título)"
+    if alvo and conv != 1.0:
+        alvo = float(alvo) * conv
+        nota = ((nota + "; ") if nota else "") + (f"preço na bolsa {nome_bolsa(ticker)}; alvo e valor justo do "
+                                                  f"{d.pop('_fonte', None) or ticker_orig} convertidos")
+    d.pop("_fonte", None)
+    if preco and alvo:
+        preco, alvo = float(preco), float(alvo)
+        if alvo < preco / 20:
+            alvo, nota = alvo * 100, "alvo convertido de GBP para pence"
+        elif alvo > preco * 20:
+            alvo, nota = alvo / 100, "alvo convertido de pence para GBP"
+    if not preco:
+        nota = "sem dados no Yahoo"
+    if not etf and preco and h is not None and len(h) > 60:
+        if conv != 1.0 and h_orig is not None and _num(info.get("regularMarketPrice") or info.get("currentPrice")):
+            justo, metodo = valor_justo(tk, h_orig, _num(info.get("regularMarketPrice") or info.get("currentPrice")),
+                                        info)
+            justo = justo * conv if justo else None
+        else:
+            justo, metodo = valor_justo(tk, h, float(preco), info)
+        if justo:
+            d.update(justo=justo, justo_pct=justo / float(preco) - 1)
+            if metodo == "Graham":
+                nota = (nota + "; " if nota else "") + "valor justo pelo número de Graham"
+        else:                                           # dizer porque não há valor justo
+            eps = _num(info.get("trailingEps"))
+            pq = ("lucros dos últimos 12 meses negativos ou nulos (não há P/E)" if eps is not None and eps <= 0 else
+                  "o Yahoo não tem os lucros deste título" if eps is None else
+                  "lucros sem histórico suficiente e valor contabilístico em falta ou negativo")
+            nota = (nota + "; " if nota else "") + "sem valor justo: " + pq
+    if not etf and preco:                               # saúde financeira e qualidade (contas da bolsa principal)
+        try:
+            d.update(fundamentos(tk, info, d.get("_moeda_neg") or info.get("currency")))
+        except Exception as e:
+            d["saude"] = "sem dados no Yahoo"
+            registo(f"fundamentos {ticker_orig}: {e}")
+    try:                                                # dividendos (valor na moeda desta cotação = yield × preço)
+        px_base = _num(info.get("currentPrice")) or _num(info.get("regularMarketPrice")) or _num(info.get("previousClose"))
+        taxa = _num(info.get("dividendRate"))
+        dy = taxa / px_base if (taxa and px_base) else _num(info.get("trailingAnnualDividendYield"))
+        if etf and not dy:
+            dy = _num(info.get("yield"))
+        if dy and 0 < dy < 0.5:
+            d["div_yield"] = dy
+            d["div"] = dy * preco if preco else None
+        po = _num(info.get("payoutRatio"))
+        if po and po > 0 and not etf:
+            d["payout"] = po
+    except Exception:
+        pass
+    pe = _num(info.get("trailingPE"))
+    d["pe"] = pe if pe and pe > 0 else None             # sem P/E: lucros negativos ou sem dados
+    d["_cap_local"] = _num(info.get("marketCap"))
+    d.update(moeda=info.get("currency", ""), preco=preco, alvo=alvo,
+             pot=(alvo / preco - 1) if (preco and alvo) else None,
+             nanal=nanal, rec=info.get("recommendationKey"), notas=nota)
+    for i in range(len(PERIODOS)):
+        mx = d.get(f"max{i}")
+        d[f"dist{i}"] = (float(preco) / mx - 1) if (preco and mx) else None
+    try:
+        d.update(ordens(h, float(preco) if preco else None, None))
+        niveis(d, float(preco) if preco else None)
+        if d.get("mm200") and preco:
+            d["dist200"] = float(preco) / d["mm200"] - 1      # com o preço mais recente
+        alta, desde = d.pop("_alta", None), d.pop("_desde", None)
+        if alta is not None:
+            d["tend"] = ("↑ subida" if alta else "↓ descida") + (f" desde {desde:%d/%m/%Y}" if desde is not None else "")
+        pontuar(d, float(preco) if preco else None)
+    except Exception as e:
+        print(f"   aviso: {codigo}: ordens não calculadas ({e})")
+    d["_info_vazia"] = not info
+    if etf:                                             # descrição e composição (para a nota ponderada das ações)
+        try:
+            c = composicao(yf, tk, ticker_orig, ticker, nome, info)
+            COMPOSICAO[ticker_orig] = COMPOSICAO[ticker] = c
+            if c.get("desc"):
+                d["etf_desc"] = c["desc"]
+        except Exception as e:
+            registo(f"composição {ticker_orig}: {e}")
+    return d
+
+
+def _por_ticker(df, tickers):
+    """Resultado do yf.download -> {ticker: DataFrame} (com um ou vários tickers, colunas por ticker ou por campo)."""
+    import pandas as pd
+    out = {}
+    if df is None or not len(df):
+        return out
+    if isinstance(df.columns, pd.MultiIndex):
+        for t in tickers:
+            for nivel in range(df.columns.nlevels):
+                if t in df.columns.get_level_values(nivel):
+                    try:
+                        out[t] = df.xs(t, axis=1, level=nivel)
+                    except Exception:
+                        pass
+                    break
+    elif len(tickers) == 1:
+        out[tickers[0]] = df
+    return out
+
+
+def _incompleto(d):
+    """Faltam dados que deviam vir (preço, história, médias ou, numa ação, a informação do Yahoo)?"""
+    return (not d.get("preco") or d.get("max0") is None or d.get("mm200c") is None
+            or (d.get("tipo") != "ETF" and d.get("_info_vazia")))
+
+
+def valores_eur(linhas):
+    """Valor transacionado e capitalização em euros (para comparar bolsas com moedas diferentes)."""
+    tx = taxas_eur({d.get("moeda") for d in linhas} | {d.get("_moeda_neg") for d in linhas})
+    for d in linhas:
+        f_maior, f_preco = tx.get(d.pop("_moeda_neg", None) or d.get("moeda"), (None, None))
+        v, c = d.pop("_valor_local", None), d.pop("_cap_local", None)
+        d["valor_tx"] = v * f_preco / 1e6 if (v and f_preco) else None
+        d["cap"] = c * f_maior / 1e9 if (c and f_maior) else None
+        d.pop("_info_vazia", None)
+
+
+def incluir_novos(novos):
+    """Depois do ➕ ACRESCENTAR: vai buscar já os dados dos títulos novos e põe-nos nas folhas Ranking / ETFs (as outras
+    linhas ficam como estão, com os valores do último ▶ ATUALIZAR / ↻ PREÇOS)."""
+    global REF, LP_MIN
+    _, _, est0 = ler_estado()
+    LP_MIN = est0.get("lp_min", LP_MIN)
+    REF = data_ref(est0.get("ref_escolha"), est0.get("ref_data"))
+    yf = _yf()
+    ex = Excel(FICHEIRO)
+    ultima = get_column_letter(len(COLS))
+    r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)]
+               + [{"op": "ler", "folha": 1, "rng": "K3"}])
+    chaves = [k for k, *_ in COLS]
+    folhas = {}
+    for idx in (1, 2):
+        tabela = r[idx - 1]
+        if not cab_ok([txt(v) for v in tabela[0]]):
+            raise SystemExit("As colunas do painel não são as desta versão: carrega em ▶ ATUALIZAR (os títulos já "
+                             "estão na folha Acrescentados e entram aí).")
+        folhas[idx] = [linha_lida(chaves, v) for v in tabela[1:] if txt(linha_lida(chaves, v).get("ticker"))]
+    titulos = [(n, c, t, b) for n, c, t, b, tipo in novos]
+    print(f"A ir buscar os dados de {len(novos)} título(s) novo(s)...")
+    eur = bolsas_alt([(n, c, t, b, tipo == "ETF") for n, c, t, b, tipo in novos])
+    ja = {txt(d.get("ticker")).upper() for ls in folhas.values() for d in ls}
+    rep = [a for a in novos if {a[2].upper(), (eur.get(a[2]) or a[2]).upper()} & ja]
+    for a in rep:
+        print(f"   {a[0]} ({a[2]}) já está no painel (repetido): não entra outra vez")
+    novos = [a for a in novos if a not in rep]
+    if not novos:
+        return
+    titulos = [(n, c, t, b) for n, c, t, b, tipo in novos]
+    pedir = [t for _, _, t, _ in titulos] + sorted(set(eur.values()))
+    inicio = ((REF or datetime.now()) - timedelta(days=max(d for _, d in PERIODOS) + 10)).strftime("%Y-%m-%d")
+    try:
+        hist = _cortar(_por_ticker(yf.download(pedir, start=inicio, interval="1d", group_by="ticker",
+                                               auto_adjust=False, threads=True, progress=False), pedir))
+    except Exception:
+        hist = {}
+    tx_orig = taxas_eur({moeda_prevista(t) for t in eur} | {"USD"})
+    LONGO.update(longo_prazo(yf, [t for _, _, t, _, _ in novos]))
+    linhas = []
+    for (n, c, t, b, tipo) in novos:
+        d = dados_titulo(yf, n, c, t, b, tipo == "ETF", hist, eur, tx_orig)
+        if _incompleto(d):                                    # verificação: outra vez, só este
+            try:
+                p1 = [t] + ([eur[t]] if t in eur else [])
+                h1 = _por_ticker(yf.download(p1, start=inicio, interval="1d", group_by="ticker", auto_adjust=False,
+                                             threads=False, progress=False), p1)
+                d = dados_titulo(yf, n, c, t, b, tipo == "ETF", {**hist, **_cortar(h1)}, eur, tx_orig)
+            except Exception:
+                pass
+        linhas.append(d)
+        print(f"   {c:8} preço {d.get('preco')} | alvo {d.get('alvo')}")
+    valores_eur(linhas)
+    for d in linhas:
+        folhas[2 if d.get("tipo") == "ETF" else 1].append(d)
+    pontuar_etfs(folhas[2])
+    criterios, acrescentados, estado = ler_estado()
+    base = re.sub(r" · \+\d+ acrescentado.*$", "", txt(r[2][0][0]) or "Atualizado")
+    texto = base + f" · +{len(novos)} acrescentado(s) em {datetime.now():%d/%m/%Y %H:%M}"
+    wb = construir(folhas[1], texto, folhas[2], criterios, acrescentados, estado)
+    guardar_e_abrir(wb)
+    registo(f"acrescentados ao painel: {', '.join(t for _, _, t, _, _ in novos)}")
+
+
+def recolher(acrescentados=(), so=None, apenas=None):
+    import logging
+    import warnings
+    import yfinance as yf
+    # o yfinance imprime "Failed download / possibly delisted / HTTP Error 404" para códigos sem dados;
+    # não fazem mal (a linha fica com "sem dados no Yahoo") — calam-se aqui e há um resumo no fim
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    warnings.filterwarnings("ignore")
+    # listas do script + títulos da folha Acrescentados (sem repetir tickers)
+    vistos = {a[2].upper() for a in ACOES + ETFS}
+    extra_a = [(n, c, t, b) for n, c, t, b, tipo in acrescentados if tipo != "ETF" and t.upper() not in vistos]
+    extra_e = [(n, c, t, b) for n, c, t, b, tipo in acrescentados if tipo == "ETF" and t.upper() not in vistos]
+    lista_a, lista_e = ACOES + extra_a, ETFS + extra_e
+    if so == "acoes":
+        lista_e, extra_e = [], []
+    elif so == "etfs":
+        lista_a, extra_a = [], []
+    if apenas is not None:                     # só estas ações (as das composições dos ETFs que faltam)
+        lista_a, lista_e, extra_a, extra_e = list(apenas), [], list(apenas), []
+    if extra_a or extra_e:
+        print(f"Títulos acrescentados (folha Acrescentados + ações dos ETFs): {len(extra_a)} ações e {len(extra_e)} ETFs.")
+    todos = lista_a + lista_e
+    modo = modo_atual()
+    lst = [(n, c, t, b, k >= len(lista_a)) for k, (n, c, t, b) in enumerate(todos)]
+    if modo == "todos":                        # cada título na bolsa da lista, em euros e nos EUA (uma linha cada)
+        alt_e, alt_u = bolsas_alt(lst, "eur"), bolsas_alt(lst, "eua")
+        variantes = lambda t: [None, alt_e.get(t), alt_u.get(t)]
+    else:
+        eur0 = bolsas_alt(lst, modo)
+        variantes = lambda t: [eur0.get(t)]
+    # repetidos: a mesma ação duas vezes (p. ex. NVDA na lista e NVD.DE acrescentada) -> fica a primeira
+    vistos_t, sem_rep, alt_de, n_a = set(), [], [], 0
+    rep = []
+    for k, (n, c, t, b) in enumerate(todos):
+        entrou = False
+        for a in variantes(t):
+            final = (a or t).upper()
+            chaves = {final} if modo == "todos" else {t.upper(), final}
+            if chaves & vistos_t:
+                continue
+            vistos_t |= chaves
+            sem_rep.append((n, c, t, b))
+            alt_de.append(a)
+            n_a += k < len(lista_a)
+            entrou = True
+        if not entrou:
+            rep.append(t)
+            REPETIDOS.add(t.upper())
+    lista_a, lista_e = sem_rep[:n_a], sem_rep[n_a:]
+    todos = sem_rep
+    alt_dic = lambda k: {todos[k][2]: alt_de[k]} if alt_de[k] else {}
+    if rep:
+        print(f"   {len(rep)} título(s) repetido(s) (a mesma empresa com outro ticker) não entra(m): "
+              + ", ".join(rep[:12]) + (" …" if len(rep) > 12 else ""))
+    print(f"Bolsa: {MODOS[modo]}.")
+    tickers = sorted({a[2] for a in todos} | {a for a in alt_de if a})
+    LONGO.update(longo_prazo(yf, [a[2] for a in todos]))
+    print("A descarregar cotações diárias dos últimos 3 anos...")
+    inicio = ((REF or datetime.now()) - timedelta(days=max(d for _, d in PERIODOS) + 10)).strftime("%Y-%m-%d")
+    hist = _cortar(_por_ticker(yf.download(tickers, start=inicio, interval="1d", group_by="ticker",
+                                           auto_adjust=False, threads=True, progress=False), tickers))
+    tx_orig = taxas_eur({moeda_prevista(todos[k][2]) for k in range(len(todos)) if alt_de[k]} | {"USD"})
+    linhas = []
+    for k, (nome, codigo, ticker_orig, bolsa) in enumerate(todos, start=1):
+        etf = k > len(lista_a)
+        d = dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, alt_dic(k - 1), tx_orig)
+        linhas.append(d)
+        print(f"{k:3}/{len(todos)} {codigo:8} preço {d.get('preco')} | alvo {d.get('alvo')}")
+        time.sleep(0.3)
+    # verificação: títulos com dados em falta (p. ex. o Yahoo falhou no pedido em conjunto) -> pede-os um a um, até 2 vezes
+    for volta in (1, 2):
+        faltam = [k for k, d in enumerate(linhas) if _incompleto(d)]
+        if not faltam:
+            break
+        print(f"\nVerificação ({volta}/2): {len(faltam)} título(s) com dados em falta; a pedir outra vez um a um...")
+        for k in faltam:
+            nome, codigo, ticker_orig, bolsa = todos[k]
+            pedir = [ticker_orig] + ([alt_de[k]] if alt_de[k] else [])
+            h1 = {}
+            for tent in range(2):
+                try:
+                    h1 = _por_ticker(yf.download(pedir, start=inicio, interval="1d", group_by="ticker",
+                                                 auto_adjust=False, threads=False, progress=False), pedir)
+                except Exception:
+                    h1 = {}
+                if h1:
+                    break
+                time.sleep(3)
+            if not h1:                                         # último recurso: a história do próprio título
+                try:
+                    h1 = {t: yf.Ticker(t).history(start=inicio, auto_adjust=False) for t in pedir}
+                except Exception:
+                    h1 = {}
+            novo = dados_titulo(yf, nome, codigo, ticker_orig, bolsa, k >= len(lista_a), {**hist, **_cortar(h1)},
+                                alt_dic(k), tx_orig)
+            if (not _incompleto(novo)) or sum(v is not None for v in novo.values()) > sum(v is not None for v in linhas[k].values()):
+                linhas[k] = novo
+            print(f"   {codigo:8} {'completo' if not _incompleto(linhas[k]) else 'ainda incompleto'}")
+            time.sleep(1)
+    pontuar_etfs(linhas)
+    for d in linhas:                                           # o que faltar depois disto: dizer porquê, nas notas
+        falta = []
+        if not d.get("preco"):
+            falta.append("preço")
+        elif d.get("mm200c") is None:
+            falta.append("médias (menos de 200 dias de cotações)" if d.get("max0") is not None else "cotações")
+        if d.get("tipo") != "ETF" and d.get("preco") and d.get("alvo") is None:
+            falta.append("preço-alvo (o Yahoo não tem analistas para este título)")
+        if falta and d.get("notas") != "sem dados no Yahoo":
+            d["notas"] = ((d.get("notas") or "") + "; " if d.get("notas") else "") + "falta: " + ", ".join(falta)
+        d.pop("_info_vazia", None)
+    falhas = [d["ticker"] for d in linhas if d["notas"] == "sem dados no Yahoo"]
+    if falhas:
+        print(f"\nSem dados no Yahoo ({len(falhas)}): {', '.join(falhas)} — confirma estes códigos nas listas do script.")
+    valores_eur(linhas)
+    acoes, etfs = linhas[:len(lista_a)], linhas[len(lista_a):]
+    return acoes, etfs   # a ordem é aplicada em construir() conforme o "Ordenar por" de cada folha
+
+
+
+
+# ================================================================================================ ligação ao Excel aberto
+PS = r"""
+$ErrorActionPreference = 'Stop'
+$req = Get-Content -Raw -Encoding UTF8 -LiteralPath '@@IN@@' | ConvertFrom-Json
+$wb = $null
+# 1) procura o livro em TODOS os Excel abertos (tabela de objetos em execução do Windows)
+try {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+public static class RotGerarDados {
+  [DllImport("ole32.dll")] static extern int GetRunningObjectTable(int r, out IRunningObjectTable p);
+  [DllImport("ole32.dll")] static extern int CreateBindCtx(int r, out IBindCtx p);
+  public static object Procurar(string nome) {
+    IRunningObjectTable rot; IEnumMoniker en; IBindCtx ctx;
+    GetRunningObjectTable(0, out rot); rot.EnumRunning(out en); CreateBindCtx(0, out ctx);
+    IMoniker[] m = new IMoniker[1];
+    while (en.Next(1, m, IntPtr.Zero) == 0) {
+      string dn = null;
+      try { m[0].GetDisplayName(ctx, null, out dn); } catch { continue; }
+      if (dn == null) continue;
+      if (dn.EndsWith("\\" + nome, StringComparison.OrdinalIgnoreCase) || dn.EndsWith("/" + nome, StringComparison.OrdinalIgnoreCase)) {
+        object o; rot.GetObject(m[0], out o); return o;
+      }
+    }
+    return null;
+  }
+}
+"@ -ErrorAction SilentlyContinue
+  $wb = [RotGerarDados]::Procurar($req.livro)
+} catch { $wb = $null }
+# 2) senão, o Excel "ativo"
+$xl = $null
+if (-not $wb) {
+  try { $xl = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application') } catch { exit 3 }
+  foreach ($b in $xl.Workbooks) { if ($b.Name -ieq $req.livro) { $wb = $b } }
+}
+if (-not $wb) {
+  try { foreach ($pv in $xl.ProtectedViewWindows) { if ($pv.SourceName -ieq $req.livro) { exit 4 } } } catch {}
+  exit 3
+}
+$res = New-Object System.Collections.ArrayList
+foreach ($o in $req.ops) {
+  if ($o.op -eq 'ativa') { [void]$res.Add([int]$wb.ActiveSheet.Index); continue }
+  if ($o.op -eq 'fechar') { $wb.Close($false); [void]$res.Add($null); break }
+  if ($o.op -eq 'ocultos') {
+    if ($o.folha -is [string]) { $sh = $wb.Worksheets.Item($o.folha) } else { $sh = $wb.Worksheets.Item([int]$o.folha) }
+    $oc = New-Object System.Collections.ArrayList
+    for ($r = [int]$o.r0; $r -lt [int]$o.r0 + [int]$o.max; $r++) {
+      $v = $sh.Cells.Item($r, [int]$o.col).Value2
+      if (-not $v) { break }
+      if ($sh.Rows.Item($r).Hidden) { [void]$oc.Add([string]$v) }
+    }
+    [void]$res.Add($oc); continue
+  }
+  if ($o.op -eq 'ler_filtros') {
+    $out = New-Object System.Collections.ArrayList
+    foreach ($sh in $wb.Worksheets) {
+      try {
+        if (-not $sh.AutoFilterMode) { continue }
+        $af = $sh.AutoFilter; $rg = $af.Range; $fl = New-Object System.Collections.ArrayList
+        for ($i = 1; $i -le $af.Filters.Count; $i++) {
+          $f = $af.Filters.Item($i)
+          if (-not $f.On) { continue }
+          $op = [int]$f.Operator
+          if ($op -ge 8 -and $op -le 10) { continue }
+          $c2 = $null; try { $c2 = $f.Criteria2 } catch {}
+          $cab = [string]$sh.Cells.Item($rg.Row, $rg.Column + $i - 1).Value2
+          [void]$fl.Add(@{cab = $cab.Trim(); op = $op; c1 = $f.Criteria1; c2 = $c2})
+        }
+        if ($fl.Count -gt 0) { [void]$out.Add(@{folha = $sh.Name; r = $rg.Row; c = $rg.Column; nr = $rg.Rows.Count; nc = $rg.Columns.Count; filtros = $fl}) }
+      } catch {}
+    }
+    [void]$res.Add($out); continue
+  }
+  if ($o.op -eq 'mostrar_tudo') {
+    try {
+      if ($o.folha -is [string]) { $sh = $wb.Worksheets.Item($o.folha) } else { $sh = $wb.Worksheets.Item([int]$o.folha) }
+      if ($sh.FilterMode) { $sh.ShowAllData() }
+      if ($sh.AutoFilterMode) { $sh.AutoFilter.Range.EntireRow.Hidden = $false }
+    } catch {}
+    [void]$res.Add($null); continue
+  }
+  if ($o.op -eq 'aplicar_filtros') {
+    $so = $null
+    if ($o.folha) { try { if ($o.folha -is [string]) { $so = $wb.Worksheets.Item($o.folha).Name } else { $so = $wb.Worksheets.Item([int]$o.folha).Name } } catch {} }
+    $semLinhas = New-Object System.Collections.ArrayList
+    foreach ($it in $o.lista) {
+      if ($so -and $it.folha -ne $so) { continue }
+      try {
+        $sh = $wb.Worksheets.Item($it.folha)
+        if ($sh.AutoFilterMode) { $rg = $sh.AutoFilter.Range }
+        else { $rg = $sh.Range($sh.Cells.Item([int]$it.r, [int]$it.c), $sh.Cells.Item([int]$it.r + [int]$it.nr - 1, [int]$it.c + [int]$it.nc - 1)) }
+        $cabs = @(); foreach ($c in $rg.Rows.Item(1).Cells) { $cabs += ([string]$c.Value2).Trim() }
+        foreach ($f in $it.filtros) {
+          $k = [array]::IndexOf($cabs, [string]$f.cab)
+          if ($k -lt 0) { continue }
+          $c1 = $f.c1; if ($c1 -is [array]) { $c1 = [object[]]$c1 }
+          try {
+            if ($f.op -eq 0) { [void]$rg.AutoFilter($k + 1, $c1) }
+            elseif (($f.op -eq 1 -or $f.op -eq 2) -and $f.c2 -ne $null) { [void]$rg.AutoFilter($k + 1, $c1, $f.op, $f.c2) }
+            else { [void]$rg.AutoFilter($k + 1, $c1, $f.op) }
+          } catch {}
+        }
+        $vis = 0; try { $vis = $sh.AutoFilter.Range.Columns.Item(1).SpecialCells(12).Count } catch {}
+        if ($vis -le 1) { try { if ($sh.FilterMode) { $sh.ShowAllData() } } catch {}; [void]$semLinhas.Add($it.folha) }
+      } catch {}
+    }
+    [void]$res.Add($semLinhas); continue
+  }
+  if ($o.folha -is [string]) { $ws = $wb.Worksheets.Item($o.folha) } else { $ws = $wb.Worksheets.Item([int]$o.folha) }
+  $rg = $ws.Range($o.rng)
+  if ($o.op -eq 'ler') {
+    $v = $rg.Value2
+    $linhas = New-Object System.Collections.ArrayList
+    if ($v -is [array]) {
+      for ($i = 1; $i -le $v.GetLength(0); $i++) {
+        $l = New-Object System.Collections.ArrayList
+        for ($j = 1; $j -le $v.GetLength(1); $j++) { $e = $v.GetValue($i, $j); [void]$l.Add($e) }
+        [void]$linhas.Add($l)
+      }
+    } else { $l = New-Object System.Collections.ArrayList; [void]$l.Add($v); [void]$linhas.Add($l) }
+    [void]$res.Add($linhas)
+  } else {
+    $nr = $o.valores.Count; $nc = $o.valores[0].Count
+    $arr = New-Object 'object[,]' $nr, $nc
+    for ($i = 0; $i -lt $nr; $i++) { for ($j = 0; $j -lt $nc; $j++) { $arr.SetValue($o.valores[$i][$j], $i, $j) } }
+    $rg.Value2 = $arr
+    [void]$res.Add($null)
+  }
+}
+if ($req.guardar) { try { $wb.Save() } catch {} }
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+ConvertTo-Json -InputObject $res -Depth 6 -Compress
+"""
+
+
+VISTA_PROTEGIDA = ("\nO {} está aberto no Excel em VISTA PROTEGIDA (ficheiro vindo da internet ou de um zip), e assim\n"
+                   "nenhum programa o consegue ler. No Excel, carrega em 'Ativar Edição' (barra amarela no topo) e volta a carregar no botão.")
+
+
+def _como_linhas(v):
+    if isinstance(v, (tuple, list)):
+        return [list(r) if isinstance(r, (tuple, list)) else [r] for r in v]
+    return [[v]]
+
+
+def _ops_pywin32(livro, ops, guardar):
+    import win32com.client
+    wb = None
+    try:                                     # todos os Excel abertos (tabela de objetos em execução)
+        import pythoncom
+        rot, ctx = pythoncom.GetRunningObjectTable(), pythoncom.CreateBindCtx(0)
+        for mk in rot:
+            nome = mk.GetDisplayName(ctx, None) or ""
+            if re.search(r"[\\/]" + re.escape(livro) + "$", nome, re.I):
+                wb = win32com.client.Dispatch(rot.GetObject(mk).QueryInterface(pythoncom.IID_IDispatch))
+                break
+    except Exception:
+        wb = None
+    if wb is None:
+        xl = win32com.client.GetActiveObject("Excel.Application")
+        wb = next((b for b in xl.Workbooks if b.Name.lower() == livro.lower()), None)
+        if wb is None:
+            try:
+                if any(str(pv.SourceName).lower() == livro.lower() for pv in xl.ProtectedViewWindows):
+                    raise SystemExit(VISTA_PROTEGIDA.format(livro))
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+            return None
+    res = []
+    for o in ops:
+        if o["op"] == "ativa":
+            res.append(int(wb.ActiveSheet.Index))
+            continue
+        if o["op"] == "fechar":
+            wb.Close(SaveChanges=False)
+            return res + [None]
+        if o["op"] == "ocultos":                    # tickers das linhas escondidas (pelo filtro) na folha
+            sh, oc = wb.Worksheets(o["folha"]), []
+            for r in range(L0 + 1, L0 + 1 + MAX_LINHAS):
+                v = sh.Cells(r, o["col"]).Value
+                if not v:
+                    break
+                if sh.Rows(r).Hidden:
+                    oc.append(str(v))
+            res.append(oc)
+            continue
+        if o["op"] == "ler_filtros":                # filtros de todas as folhas (por cabeçalho), para os repor
+            res.append(_ler_filtros_com(wb))
+            continue
+        if o["op"] == "aplicar_filtros":
+            nome = wb.Worksheets(o["folha"]).Name if o.get("folha") else None
+            res.append(_aplicar_filtros_com(wb, [x for x in o["lista"] if nome is None or x["folha"] == nome]))
+            continue
+        if o["op"] == "mostrar_tudo":               # antes de escrever: tira o filtro (as linhas ficam todas visíveis)
+            try:
+                sh = wb.Worksheets(o["folha"])
+                if sh.FilterMode:
+                    sh.ShowAllData()
+                if sh.AutoFilterMode:
+                    sh.AutoFilter.Range.EntireRow.Hidden = False
+            except Exception:
+                pass
+            res.append(None)
+            continue
+        rg = wb.Worksheets(o["folha"]).Range(o["rng"])
+        if o["op"] == "ler":
+            res.append(_como_linhas(rg.Value2))
+        else:
+            rg.Value2 = [list(r) for r in o["valores"]]
+            res.append(None)
+    if guardar:
+        try:
+            wb.Save()
+        except Exception:
+            pass
+    return res
+
+
+def _lista_com(v):
+    return [x for x in v] if isinstance(v, (tuple, list)) else v
+
+
+def _ler_filtros_com(wb):
+    """[{folha, rng, filtros: [{cab, op, c1, c2}]}] dos filtros ativos (sem os de cor/ícone)."""
+    out = []
+    for sh in wb.Worksheets:
+        try:
+            if not sh.AutoFilterMode:
+                continue
+            af = sh.AutoFilter
+            rg = af.Range
+            fl = []
+            for i in range(1, af.Filters.Count + 1):
+                f = af.Filters(i)
+                if not f.On:
+                    continue
+                op = int(f.Operator or 0)
+                if op in (8, 9, 10):
+                    continue
+                try:
+                    c2 = _lista_com(f.Criteria2)
+                except Exception:
+                    c2 = None
+                fl.append({"cab": txt(sh.Cells(rg.Row, rg.Column + i - 1).Value), "op": op,
+                           "c1": _lista_com(f.Criteria1), "c2": c2})
+            if fl:
+                out.append({"folha": sh.Name, "r": rg.Row, "c": rg.Column, "nr": rg.Rows.Count, "nc": rg.Columns.Count,
+                            "filtros": fl})
+        except Exception:
+            pass
+    return out
+
+
+def _aplicar_filtros_com(wb, lista):
+    """Repõe os filtros (por cabeçalho). Se uma folha ficar sem nenhuma linha visível, tira o filtro dessa folha
+    (nunca ficam as linhas todas escondidas). Devolve os nomes das folhas em que isso aconteceu."""
+    sem_linhas = []
+    for it in lista or []:
+        try:
+            sh = wb.Worksheets(it["folha"])
+            rg = sh.AutoFilter.Range if sh.AutoFilterMode else sh.Range(
+                sh.Cells(it["r"], it["c"]), sh.Cells(it["r"] + it["nr"] - 1, it["c"] + it["nc"] - 1))
+            cabs = [txt(c.Value) for c in rg.Rows(1).Cells]
+            for f in it["filtros"]:
+                if f["cab"] not in cabs:
+                    continue
+                campo = cabs.index(f["cab"]) + 1
+                try:
+                    if not f["op"]:
+                        rg.AutoFilter(campo, f["c1"])
+                    elif f["op"] in (1, 2) and f.get("c2") is not None:
+                        rg.AutoFilter(campo, f["c1"], f["op"], f["c2"])
+                    else:
+                        rg.AutoFilter(campo, f["c1"], f["op"])
+                except Exception:
+                    pass
+            try:
+                visiveis = sh.AutoFilter.Range.Columns(1).SpecialCells(12).Count    # 12 = só células visíveis
+            except Exception:
+                visiveis = 0
+            if visiveis <= 1:                               # só o cabeçalho: o filtro esconderia tudo -> tira-o
+                if sh.FilterMode:
+                    sh.ShowAllData()
+                sem_linhas.append(it["folha"])
+        except Exception:
+            pass
+    return sem_linhas
+
+
+def com_filtros(ex, ops, folhas):
+    """Escreve sem estragar filtros: lê os filtros, tira-os das folhas onde se vai escrever, escreve e volta a
+    aplicá-los (por cabeçalho). Se um filtro deixasse a folha sem linhas, fica sem filtro e avisa."""
+    try:
+        filtros = ex.ops([{"op": "ler_filtros"}])[0] or []
+    except Exception:
+        filtros = []
+    antes = [{"op": "mostrar_tudo", "folha": f} for f in folhas]
+    depois = [{"op": "aplicar_filtros", "folha": f, "lista": filtros} for f in folhas] if filtros else []
+    r = ex.ops(antes + list(ops) + depois, guardar=True)
+    sem = sorted({x for v in (r or [])[len(antes) + len(ops):] if v for x in v})
+    if sem:
+        print("Aviso: o filtro de " + ", ".join(sem) + " escondia todas as linhas depois da atualização; foi retirado.")
+    return r[len(antes):len(antes) + len(ops)] if r else r
+
+
+def ler_filtros():
+    """Filtros do painel aberto no Excel (antes de o ▶ ATUALIZAR o recriar). [] se não estiver aberto."""
+    if os.name != "nt" or not os.path.exists(FICHEIRO):
+        return []
+    livro = os.path.basename(FICHEIRO)
+    for f in (_ops_pywin32, _ops_powershell):
+        try:
+            r = f(livro, [{"op": "ler_filtros"}], False)
+            if r is not None:
+                return r[0] or []
+        except SystemExit:
+            return []
+        except Exception:
+            continue
+    return []
+
+
+def op_ocultos(idx):
+    return {"op": "ocultos", "folha": idx, "col": COL["ticker"], "r0": L0 + 1, "max": MAX_LINHAS}
+
+
+OCULTOS = set()       # tickers escondidos pelos filtros do Excel (não aparecem na página do telemóvel)
+
+
+def repor_filtros(filtros, espera=45):
+    """Depois de abrir o painel novo: volta a aplicar os filtros (espera que o Excel abra o livro)."""
+    if not filtros or os.name != "nt":
+        return
+    livro = os.path.basename(FICHEIRO)
+    fim = time.time() + espera
+    while time.time() < fim:
+        time.sleep(3)
+        for f in (_ops_pywin32, _ops_powershell):
+            try:
+                r = f(livro, [{"op": "aplicar_filtros", "lista": filtros}, op_ocultos(1), op_ocultos(2)], True)
+                if r is not None:
+                    OCULTOS.clear()
+                    OCULTOS.update(txt(t).upper() for t in (r[1] or []) + (r[2] or []))
+                    n = sum(len(x["filtros"]) for x in filtros)
+                    print(f"Filtros repostos: {n} (em {len(filtros)} folha(s)).")
+                    if r[0]:
+                        print("Aviso: o filtro de " + ", ".join(r[0]) + " escondia todas as linhas; foi retirado.")
+                    return
+            except SystemExit:
+                return
+            except Exception:
+                continue
+    print("Aviso: não consegui repor os filtros (o Excel demorou a abrir). Volta a aplicá-los à mão.")
+
+
+def _ops_powershell(livro, ops, guardar):
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump({"livro": livro, "ops": ops, "guardar": guardar}, f, ensure_ascii=False)
+        fin = f.name
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8-sig") as f:
+        f.write(PS.replace("@@IN@@", fin.replace("'", "''")))
+        fps = f.name
+    try:
+        exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\WindowsPowerShell\v1.0\powershell.exe")
+        if not os.path.exists(exe):
+            exe = "powershell"
+        r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", fps], capture_output=True, timeout=180)
+        if r.returncode == 3:
+            return None
+        if r.returncode == 4:
+            raise SystemExit(VISTA_PROTEGIDA.format(livro))
+        if r.returncode != 0:
+            raise RuntimeError("PowerShell: " + r.stderr.decode("utf-8", "replace").strip()[:800])
+        out = r.stdout.decode("utf-8", "replace").strip()
+        return json.loads(out.splitlines()[-1]) if out else []
+    finally:
+        for p in (fin, fps):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
+def _ops_ficheiro(caminho, ops, guardar):
+    from openpyxl import load_workbook
+    wb = load_workbook(caminho)
+    folha = lambda f: wb.worksheets[f - 1] if isinstance(f, int) else wb[f]
+    res = []
+    for o in ops:
+        if o["op"] == "fechar":
+            res.append(None)
+            continue
+        if o["op"] == "ativa":
+            res.append(wb.index(wb.active) + 1)
+        elif o["op"] == "ler_filtros":
+            res.append([])
+        elif o["op"] == "ocultos":
+            ws, oc = folha(o["folha"]), []
+            for r in range(L0 + 1, L0 + 1 + MAX_LINHAS):
+                v = ws.cell(r, o["col"]).value
+                if not v:
+                    break
+                if ws.row_dimensions[r].hidden:
+                    oc.append(str(v))
+            res.append(oc)
+        elif o["op"] == "aplicar_filtros":
+            res.append([])
+        elif o["op"] == "mostrar_tudo":
+            ws = folha(o["folha"])
+            if ws.auto_filter.filterColumn:
+                ws.auto_filter.filterColumn = []
+                for r in range(L0 + 1, ws.max_row + 1):
+                    ws.row_dimensions[r].hidden = False
+            res.append(None)
+        elif o["op"] == "ler":
+            v = folha(o["folha"])[o["rng"]]
+            res.append([[c.value for c in r] for r in v] if isinstance(v, tuple) else [[v.value]])
+        else:
+            ws = folha(o["folha"])
+            cel = ws[o["rng"]]
+            cel = cel if isinstance(cel, tuple) else ((cel,),)
+            for r, linha in zip(cel, o["valores"]):
+                for c, val in zip(r, linha):
+                    c.value = val
+            res.append(None)
+    if guardar or any(o["op"] == "escrever" for o in ops):
+        wb.save(caminho)
+    return res
+
+
+class Excel:
+    """Lê/escreve num livro: no Excel aberto (pywin32 ou, sem ele, PowerShell) ou, se estiver fechado, no ficheiro."""
+
+    def __init__(self, caminho):
+        self.caminho, self.livro, self.modo = caminho, os.path.basename(caminho), None
+
+    def ops(self, ops, guardar=False):
+        if self.modo in (None, "pywin32"):
+            try:
+                r = _ops_pywin32(self.livro, ops, guardar)
+                if r is not None:
+                    self.modo = "pywin32"
+                    return r
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+        if os.name == "nt" and self.modo in (None, "ps"):
+            r = _ops_powershell(self.livro, ops, guardar)
+            if r is not None:
+                self.modo = "ps"
+                return r
+        try:
+            self.modo = "ficheiro"
+            return _ops_ficheiro(self.caminho, ops, guardar)
+        except PermissionError:
+            raise SystemExit(f"\nNão consegui ler o {self.livro}: está aberto no Excel e não consegui ligar-me a ele.\n"
+                             "Causas habituais:\n"
+                             "  - está em Vista Protegida: no Excel carrega em 'Ativar Edição' (barra amarela) e tenta outra vez;\n"
+                             "  - o Excel foi aberto como administrador: fecha-o e abre-o normalmente;\n"
+                             f"  - o ficheiro aberto não é o desta pasta ({PASTA}).\n"
+                             "Se nada disto resolver: guarda-o, fecha-o e volta a carregar no botão (ou duplo clique no .bat).")
+
+    def estado(self, folha, texto, guardar=False, rapido=False):
+        """Escreve na célula do estado (com o PowerShell, as mensagens 'rapido' saltam-se: cada chamada demora ~1 s)."""
+        if rapido and self.modo != "pywin32":
+            return
+        try:
+            self.ops([{"op": "escrever", "folha": folha, "rng": C_ESTADO, "valores": [[texto]]}], guardar)
+        except BaseException:
+            pass
+
+
+def vazio_esp(v):
+    """Célula vazia -> um espaço (assim o texto da célula ao lado não se estende por cima dela)."""
+    return " " if v is None or (isinstance(v, str) and v == "") else v
+
+
+def sem_esp(v):
+    """Ao ler do Excel: o espaço das células vazias volta a ser vazio."""
+    return None if isinstance(v, str) and not v.strip() else v
+
+
+def linha_lida(chaves, v):
+    return {k: sem_esp(x) for k, x in zip(chaves, v)}
+
+
+def qtd_detida(v):
+    """Coluna 'Detido': x (tens, sem dizer quantas) ou o nº de ações (pode ter decimais). Devolve o nº ou None."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v) if v > 0 else None
+    t = str(v or "").strip().replace(" ", "")
+    if re.fullmatch(r"\d+([.,]\d+)?", t):
+        f = float(t.replace(",", "."))
+        return f if f > 0 else None
+    return None
+
+
+def e_detido(v):
+    return str(v or "").strip().lower() == "x" or qtd_detida(v) is not None
+
+
+def txt(v):
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v).strip()
+
+
+
+# ================================================================================================ ↕ ORDENAR
+MAX_LINHAS = 400
+
+
+def ordenar(idx):
+    """Reordena a folha idx (1 = Ranking, 2 = ETFs) pelo critério escolhido em D3, sem descarregar nada."""
+    ex = Excel(FICHEIRO)
+    ultima = get_column_letter(len(COLS))
+    r = ex.ops([{"op": "ler", "folha": idx, "rng": C_ORD},
+                {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"}])
+    criterio = txt(r[0][0][0]) or ORD_PADRAO[idx]
+    cab, dados = [txt(v) for v in r[1][0]], r[1][1:]
+    chaves = {h: k for k, h, *_ in COLS}
+    chaves.update({h: k for k, h in CAB_ETF.items()})
+    if [chaves.get(h) for h in cab] != [k for k, *_ in COLS]:
+        raise SystemExit("As colunas desta folha não são as desta versão do script: carrega primeiro em ▶ ATUALIZAR.")
+    i_tk = COL["ticker"] - 1
+    n = 0
+    while n < len(dados) and txt(dados[n][i_tk]):
+        n += 1
+    linhas = [linha_lida([k for k, *_ in COLS], dados[i]) for i in range(n)]
+    linhas.sort(key=chave_ordem(criterio))
+    valores = [[vazio_esp(d.get(k)) for k, *_ in COLS] for d in linhas]
+    com_filtros(ex, [{"op": "escrever", "folha": idx, "rng": f"A{L0 + 1}:{ultima}{L0 + n}", "valores": valores},
+                     {"op": "escrever", "folha": idx, "rng": C_ORD_EST, "valores": [[
+                         f"Ordenado por: {criterio} ({datetime.now():%d/%m/%Y %H:%M})"]]}], [idx])
+    print(f"{n} linhas ordenadas por: {criterio}")
+    registo(f"ordenar folha {idx}: {n} linhas por '{criterio}' (ligação ao Excel: {ex.modo})")
+    time.sleep(2)
+
+
+def ler_estado():
+    """Antes de atualizar, lê do painel atual: o "Ordenar por" de cada folha, a folha Procurar e os Acrescentados."""
+    criterios, acrescentados = {}, []
+    estado = {"proc": {}, "det": set()}
+    origem = FICHEIRO
+    if not os.path.exists(origem):        # 1.ª vez com o nome novo: aproveita o painel com o nome antigo
+        outro = os.path.join(PASTA, (BASE[1:] if BASE.startswith("_") else "_" + BASE) + ".xlsx")
+        origem = outro if os.path.exists(outro) else None
+    if origem:
+        ex = Excel(origem)
+        tentar = lambda ops: _tentar(ex, ops)
+        r = tentar([{"op": "ler", "folha": 1, "rng": f"A{L0}"}, {"op": "ler", "folha": 1, "rng": f"A{L0_ANTIGO}"}])
+        recente = bool(r) and (txt(r[0][0][0]) in ("Empresa / ETF", "Detido (x)") or txt(r[1][0][0]) == "x")
+        if r and txt(r[0][0][0]) == "Detido (x)":       # títulos com x (detidos), por nome e por ticker
+            ultima = get_column_letter(len(COLS))
+            completo = True
+            for idx in (1, 2):
+                t = tentar([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"}])
+                cab = [txt(v) for v in t[0][0]] if t else []
+                if "Empresa / ETF" in cab and "Ticker Yahoo" in cab:
+                    jn, jt = cab.index("Empresa / ETF"), cab.index("Ticker Yahoo")
+                    jq = cab.index("Nº de ações detidas") if "Nº de ações detidas" in cab else None
+                    jp = cab.index("Preço médio de compra (por ação)") if "Preço médio de compra (por ação)" in cab else None
+                    for v in t[0][1:]:
+                        qq = qtd_detida(v[jq]) if jq is not None else None
+                        pp = qtd_detida(v[jp]) if jp is not None else None
+                        if qq is not None:
+                            estado.setdefault("qtd", {}).update({txt(v[jn]): qq, txt(v[jt]).upper(): qq})
+                        if pp is not None:
+                            estado.setdefault("pcompra", {}).update({txt(v[jn]): pp, txt(v[jt]).upper(): pp})
+                        if qq is not None and not e_detido(v[0]):
+                            estado["det"] |= {txt(v[jn]), txt(v[jt]).upper()}
+                        if e_detido(v[0]):
+                            estado["det"] |= {txt(v[jn]), txt(v[jt]).upper()}
+                            q = qtd_detida(v[0])
+                            if q is not None:
+                                estado.setdefault("qtd", {}).update({txt(v[jn]): q, txt(v[jt]).upper(): q})
+                else:
+                    completo = False                # uma folha não se leu: não se perde nenhum x guardado
+            if not completo:
+                estado["det"] |= ler_detidos()
+                estado["qtd"] = {**ler_qtd(), **estado.get("qtd", {})}
+                estado["pcompra"] = {**ler_qtd("pcompra"), **estado.get("pcompra", {})}
+                print("Aviso: não consegui ler os x de uma das folhas; mantenho também os detidos guardados.")
+            guardar_detidos(estado["det"], estado.get("qtd", {}), estado.get("pcompra", {}))
+            rr = tentar([{"op": "ler", "folha": 1, "rng": C_REF}, {"op": "ler", "folha": 1, "rng": C_DATAREF},
+                         {"op": "ler", "folha": 1, "rng": C_LPMIN}])
+            if rr:
+                estado["ref_escolha"], estado["ref_data"] = txt(rr[0][0][0]) or "Atual", rr[1][0][0]
+                if rr[2][0][0] not in (None, ""):
+                    estado["lp_min"] = ler_lp_min(rr[2][0][0])
+        nomes_crit = [c[0] for c in CRITERIOS_ORD]
+        for idx in (1, 2):
+            r = tentar([{"op": "ler", "folha": idx, "rng": C_ORD if recente else "D3"},
+                        {"op": "ler", "folha": idx, "rng": f"{get_column_letter(COL['nota'])}{L0}"}])
+            if r and txt(r[0][0][0]) in nomes_crit:
+                criterios[idx] = txt(r[0][0][0])
+                # 1.ª vez com a nota global: quem ordenava pela pontuação passa a ordenar pela nota global
+                if criterios[idx] == "Pontuação (5 → 1)" and not txt(r[1][0][0]).startswith("Nota global"):
+                    criterios[idx] = ORD_PADRAO[idx]
+        if recente:
+            for pf in (FOLHA_PROC, FOLHA_PROC_ETF):
+                cels = (P_TXT, P_CRIT, P_REG, P_N)
+                r = tentar([{"op": "ler", "folha": pf, "rng": f"J{L_TAB}"}] +
+                           [{"op": "ler", "folha": pf, "rng": c} for c in cels])
+                if r and txt(r[0][0][0]) == CAB_P[-1]:
+                    estado["proc"][pf] = {c: r[k + 1][0][0] for k, c in enumerate(cels)}
+        try:
+            acrescentados = ler_acrescentados(ex)
+        except SystemExit:
+            raise
+        except Exception as e:                     # não conseguiu ler a folha: tenta o ficheiro gravado e a cópia de segurança
+            registo(f"aviso: folha Acrescentados não lida pelo Excel ({e}); a tentar o ficheiro / a cópia")
+            try:
+                acrescentados = ler_acrescentados(Excel(origem), so_ficheiro=True)
+            except Exception:
+                acrescentados = ler_copia_acr()
+    elif not acrescentados:
+        acrescentados = ler_copia_acr()
+    if acrescentados:
+        print(f"Folha Acrescentados: {len(acrescentados)} título(s).")
+    registo(f"acrescentados lidos: {len(acrescentados)}")
+    guardar_copia_acr(acrescentados)
+    return criterios, acrescentados, estado
+
+
+FICH_ACR = os.path.join(PASTA, BASE + "_acrescentados.json")
+FICH_DET = os.path.join(PASTA, BASE + "_detidos.json")
+
+
+def guardar_detidos(det, qtd=None, pcompra=None):
+    try:
+        if os.path.exists(FICH_DET):                 # cópia do anterior (para recuperar se for preciso)
+            shutil.copyfile(FICH_DET, FICH_DET.replace(".json", "_anterior.json"))
+        with open(FICH_DET, "w", encoding="utf-8") as f:
+            json.dump({"det": sorted(x for x in det if x), "qtd": {k: v for k, v in (qtd or {}).items() if k},
+                       "pcompra": {k: v for k, v in (pcompra or {}).items() if k}},
+                      f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def ler_detidos():
+    try:
+        with open(FICH_DET, encoding="utf-8") as f:
+            j = json.load(f)
+        return set(j.get("det", []) if isinstance(j, dict) else j)
+    except Exception:
+        return set()
+
+
+def ler_qtd(chave="qtd"):
+    try:
+        with open(FICH_DET, encoding="utf-8") as f:
+            j = json.load(f)
+        return dict(j.get(chave, {})) if isinstance(j, dict) else {}
+    except Exception:
+        return {}
+
+
+def guardar_copia_acr(acrescentados):
+    """Cópia de segurança da folha Acrescentados (para nunca se perderem se o Excel falhar na leitura)."""
+    try:
+        with open(FICH_ACR, "w", encoding="utf-8") as f:
+            json.dump([list(a) for a in acrescentados], f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def ler_copia_acr():
+    try:
+        with open(FICH_ACR, encoding="utf-8") as f:
+            return [tuple(a) for a in json.load(f)]
+    except Exception:
+        return []
+
+
+def _tentar(ex, ops):
+    try:
+        return ex.ops(ops)
+    except SystemExit:
+        raise
+    except Exception:
+        return None
+
+
+# custos usados no teste do "Último ano: seguir o sinal"
+TESTE_CUSTO = 0.001             # custo por operação (comissão + spread), 0,1%
+TESTE_JURO = 0.02               # juro anual do dinheiro parado (fora do mercado)
+
+
+# ================================================================================================ ↻ PREÇOS
+def precos_agora(tickers, _repetir=False):
+    """Preço mais recente de cada ticker (velas de 1 minuto com pré-abertura e pós-fecho, todos de uma vez) e o fecho do
+    dia anterior. Devolve {ticker: (preço, "sessão dd/mm hh:mm", fecho de referência)}."""
+    import logging
+    import warnings
+    import pandas as pd
+    import yfinance as yf
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    warnings.filterwarnings("ignore")
+    if not _repetir:
+        print(f"A pedir ao Yahoo os preços de {len(tickers)} títulos...")
+    kw = dict(group_by="ticker", threads=True, progress=False, auto_adjust=False)
+    minuto = yf.download(tickers, period="2d", interval="1m", prepost=True, **kw)
+    diario = yf.download(tickers, period="10d", interval="1d", **kw)
+
+    def serie(df, t):
+        try:
+            x = df[t]["Close"] if isinstance(df.columns, pd.MultiIndex) else df["Close"]
+            return x.dropna()
+        except Exception:
+            return pd.Series(dtype=float)
+
+    out = {}
+    for t in tickers:
+        m = serie(minuto, t)
+        if not len(m):
+            continue
+        ts, preco = pd.Timestamp(m.index[-1]), float(m.iloc[-1])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        zona = _zona_bolsa(t)                         # o Yahoo junta bolsas de fusos diferentes em UTC
+        local = ts.tz_convert(zona) if zona else ts
+        sessao = "sessão normal"
+        if zona:                                      # EUA/Canadá: sessão normal 9h30-16h00 (hora local da bolsa)
+            minutos = local.hour * 60 + local.minute
+            sessao = "pré-abertura" if minutos < 570 else "pós-fecho" if minutos >= 960 else "sessão normal"
+        hora = datetime.fromtimestamp(ts.timestamp())   # hora deste PC (Lisboa)
+        d = serie(diario, t)
+        dia = lambda ix: (pd.Timestamp(ix).tz_convert(zona) if (zona and pd.Timestamp(ix).tzinfo) else pd.Timestamp(ix)).date()
+        anteriores = d[[dia(ix) < local.date() for ix in d.index]] if len(d) else d
+        ref = float(anteriores.iloc[-1]) if len(anteriores) else None
+        out[t] = (preco, f"{sessao} {hora:%d/%m %H:%M}", ref)
+    faltam = [t for t in tickers if t not in out]
+    if faltam and not _repetir:                        # verificação: os que falharam no pedido em conjunto, um a um
+        print(f"Verificação: {len(faltam)} sem preço; a pedir outra vez um a um...")
+        for t in faltam:
+            time.sleep(1)
+            try:
+                out.update(precos_agora([t], _repetir=True))
+            except Exception:
+                pass
+    return out
+
+
+# Horário de negociação de cada bolsa (hora local) -> mostra-se em hora de Lisboa (com a hora de verão de cada sítio)
+HORARIOS = {"": ("America/New_York", "09:30", "16:00"), ".L": ("Europe/London", "08:00", "16:30"),
+            ".IL": ("Europe/London", "08:00", "16:30"), ".IR": ("Europe/Dublin", "08:00", "16:30"),
+            ".LS": ("Europe/Lisbon", "08:00", "16:30"), ".DE": ("Europe/Berlin", "09:00", "17:30"),
+            ".F": ("Europe/Berlin", "08:00", "22:00"), ".MU": ("Europe/Berlin", "08:00", "22:00"),
+            ".SG": ("Europe/Berlin", "08:00", "22:00"), ".BE": ("Europe/Berlin", "08:00", "22:00"),
+            ".DU": ("Europe/Berlin", "08:00", "20:00"), ".HM": ("Europe/Berlin", "08:00", "22:00"),
+            ".HA": ("Europe/Berlin", "08:00", "22:00"), ".PA": ("Europe/Paris", "09:00", "17:30"),
+            ".AS": ("Europe/Amsterdam", "09:00", "17:30"), ".BR": ("Europe/Brussels", "09:00", "17:30"),
+            ".MI": ("Europe/Rome", "09:00", "17:30"), ".MC": ("Europe/Madrid", "09:00", "17:30"),
+            ".VI": ("Europe/Vienna", "09:00", "17:30"), ".SW": ("Europe/Zurich", "09:00", "17:30"),
+            ".ST": ("Europe/Stockholm", "09:00", "17:30"), ".HE": ("Europe/Helsinki", "10:00", "18:30"),
+            ".CO": ("Europe/Copenhagen", "09:00", "17:00"), ".OL": ("Europe/Oslo", "09:00", "16:20"),
+            ".WA": ("Europe/Warsaw", "09:00", "17:00"), ".T": ("Asia/Tokyo", "09:00", "15:30"),
+            ".HK": ("Asia/Hong_Kong", "09:30", "16:00"), ".TW": ("Asia/Taipei", "09:00", "13:30"),
+            ".TWO": ("Asia/Taipei", "09:00", "13:30"), ".KS": ("Asia/Seoul", "09:00", "15:30"),
+            ".KQ": ("Asia/Seoul", "09:00", "15:30"), ".SS": ("Asia/Shanghai", "09:30", "15:00"),
+            ".SZ": ("Asia/Shanghai", "09:30", "15:00"), ".NS": ("Asia/Kolkata", "09:15", "15:30"),
+            ".BO": ("Asia/Kolkata", "09:15", "15:30"), ".SI": ("Asia/Singapore", "09:00", "17:00"),
+            ".AX": ("Australia/Sydney", "10:00", "16:00"), ".TO": ("America/Toronto", "09:30", "16:00"),
+            ".V": ("America/Toronto", "09:30", "16:00"), ".SA": ("America/Sao_Paulo", "10:00", "17:00"),
+            ".BA": ("America/Argentina/Buenos_Aires", "11:00", "17:00"), ".MX": ("America/Mexico_City", "08:30", "15:00"),
+            ".JO": ("Africa/Johannesburg", "09:00", "17:00"), ".TA": ("Asia/Jerusalem", "09:59", "17:25")}
+
+
+def horario_bolsa(ticker):
+    """'hh:mm-HH:mm' em hora de Lisboa (hoje), pela bolsa do ticker; vazio se não se souber."""
+    t = txt(ticker).upper()
+    suf = "" if "." not in t else "." + t.rsplit(".", 1)[1]
+    h = HORARIOS.get(suf)
+    if not h:
+        return None
+    try:
+        import pandas as pd
+        zona, a, f = h
+        hoje = datetime.now().strftime("%Y-%m-%d")
+        conv = lambda hm: pd.Timestamp(f"{hoje} {hm}").tz_localize(zona).tz_convert("Europe/Lisbon").strftime("%H:%M")
+        return f"{conv(a)}-{conv(f)}"
+    except Exception:
+        return None
+
+
+def _zona_bolsa(ticker):
+    """Fuso da bolsa para separar pré-abertura / sessão normal / pós-fecho (só EUA e Canadá têm essas sessões no Yahoo)."""
+    if "." not in ticker:
+        return "America/New_York"
+    if ticker.upper().endswith((".TO", ".V", ".NE", ".CN")):
+        return "America/Toronto"
+    return None
+
+
+def recalcular(d, preco, hora, ref):
+    """Atualiza numa linha (dict) o preço e tudo o que depende dele, com os valores que já estão na folha."""
+    n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    d["preco"], d["preco_hora"] = preco, hora
+    if n("div"):                                     # o dividendo fica; o yield acompanha o preço
+        d["div_yield"] = n("div") / preco
+    if ref:
+        d["var1d"] = preco / ref - 1
+    if n("alvo"):
+        d["pot"] = n("alvo") / preco - 1
+    if n("justo"):
+        d["justo_pct"] = n("justo") / preco - 1
+    for i in range(len(PERIODOS)):
+        if n(f"max{i}"):
+            d[f"dist{i}"] = preco / n(f"max{i}") - 1
+    d["stop"] = n("venda_min")                         # a rede de segurança (máximo de 6 meses − 4σ) não muda com o preço
+    niveis(d, preco)
+    if n("mm200"):
+        d["dist200"] = preco / n("mm200") - 1
+    pontuar(d, preco)
+    preencher_alt(d)
+    carteira(d)
+
+def atualizar_precos():
+    """↻ PREÇOS: preços de agora (com pré-abertura e pós-fecho) e as contas que dependem deles, nas folhas Ranking e ETFs,
+    sem descarregar o resto; depois volta a ordenar cada folha pelo critério escolhido (os x acompanham as linhas)."""
+    ex = Excel(FICHEIRO)
+    ultima = get_column_letter(len(COLS))
+    global LP_MIN
+    rr = ex.ops([{"op": "ler", "folha": 1, "rng": C_REF}, {"op": "ler", "folha": 1, "rng": C_LPMIN}])
+    sit = txt(rr[0][0][0])
+    if rr[1][0][0] not in (None, ""):
+        LP_MIN = ler_lp_min(rr[1][0][0])
+    if sit and sit != "Atual" and sit in REFS:
+        raise SystemExit(f"O painel está na situação de uma data passada ({sit}). Para preços de agora escolhe 'Atual' "
+                         f"em {C_REF} e carrega em ▶ ATUALIZAR.")
+    r = ex.ops([op for idx in (1, 2) for op in (
+        {"op": "ler", "folha": idx, "rng": C_ORD},
+        {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"})])
+    chaves = [k for k, *_ in COLS]
+    folhas = {}
+    for idx in (1, 2):
+        criterio, tabela = txt(r[2 * idx - 2][0][0]) or ORD_PADRAO[idx], r[2 * idx - 1]
+        cab = [txt(v) for v in tabela[0]]
+        if not cab_ok(cab):
+            raise SystemExit("As colunas desta folha não são as desta versão do script: carrega primeiro em ▶ ATUALIZAR.")
+        linhas = []
+        for v in tabela[1:]:
+            d = linha_lida(chaves, v)
+            if not txt(d.get("ticker")):
+                break
+            linhas.append(d)
+        folhas[idx] = (criterio, linhas)
+    tickers = sorted({txt(d["ticker"]) for _, ls in folhas.values() for d in ls})
+    precos = precos_agora(tickers)
+    ops, n_ok = [], 0
+    for idx, (criterio, linhas) in folhas.items():
+        for d in linhas:
+            p = precos.get(txt(d["ticker"]))
+            if p:
+                recalcular(d, *p)
+                n_ok += 1
+        pontuar_etfs(linhas)
+        linhas.sort(key=chave_ordem(criterio))
+        if linhas:
+            ops.append({"op": "escrever", "folha": idx, "rng": f"A{L0 + 1}:{ultima}{L0 + len(linhas)}",
+                        "valores": [[vazio_esp(d.get(k)) for k in chaves] for d in linhas]})
+    sem = len(tickers) - len(precos)
+    msg = (f"Preços atualizados em {datetime.now():%d/%m/%Y %H:%M} ({len(precos)} títulos"
+           + (f"; {sem} sem preço novo" if sem else "") + "). O resto é do último ▶ ATUALIZAR.")
+    for idx in (1, 2):
+        ops.append({"op": "escrever", "folha": idx, "rng": C_PRECOS_EST, "valores": [[msg]]})
+        ops.append({"op": "escrever", "folha": idx, "rng": "A1", "valores": [[TXT_VERSAO]]})
+    com_filtros(ex, ops, [1, 2])                # sem filtro durante a escrita; depois os teus filtros voltam
+    try:
+        r = ex.ops([op_ocultos(1), op_ocultos(2)])
+        OCULTOS.clear()
+        OCULTOS.update(txt(t).upper() for t in (r[0] or []) + (r[1] or []))
+    except Exception:
+        pass
+    print(msg)
+    gerar_html(folhas[1][1], folhas[2][1], msg)
+    registo(f"preços: {len(precos)} de {len(tickers)} títulos (ligação ao Excel: {ex.modo})")
+    time.sleep(2)
+
+
+# ================================================================================================ telemóvel
+# Em cada ▶ ATUALIZAR e ↻ PREÇOS grava-se _Painel_telemovel.html na mesma pasta (OneDrive): uma página para o telemóvel
+# (abre-se pela app OneDrive -> abrir no Chrome; "Adicionar ao ecrã principal" faz um atalho). Só consulta.
+FICH_HTML = os.path.join(PASTA, "_Painel_telemovel.html")
+HTML_TPL = r'''<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f3b57">
+<title>Painel de ações</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1c1e21;--mu:#65676b;--li:#e3e5e8;--ac:#1f3b57}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--card:#1d2024;--tx:#e8eaed;--mu:#9aa0a6;--li:#30343a;--ac:#8ab4f8}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);font-size:15px}
+header{position:sticky;top:0;z-index:5;background:var(--ac);color:#fff;padding:10px 12px 8px}
+@media (prefers-color-scheme:dark){header{background:#1f3b57}}
+h1{font-size:17px;margin:0 0 2px;font-weight:600}
+.at{font-size:11px;opacity:.85}
+.tabs{display:flex;gap:6px;margin-top:8px}
+.tab{flex:1;border:0;border-radius:8px;padding:8px 4px;background:rgba(255,255,255,.15);color:#fff;font-size:14px}
+.tab.on{background:#fff;color:#1f3b57;font-weight:600}
+.bar{display:flex;gap:6px;margin-top:8px}
+input,select{font-size:14px;border:0;border-radius:8px;padding:8px 10px}
+input{flex:1;min-width:0}
+main{padding:8px 10px 40px}
+.card{background:var(--card);border-radius:12px;margin:8px 0;padding:10px 12px;border:1px solid var(--li)}
+.top{display:flex;align-items:center;gap:10px}
+.nota{min-width:46px;text-align:center;border-radius:10px;padding:6px 4px;font-weight:700;font-size:17px;color:#1c1e21}
+.nm{flex:1;min-width:0}
+.nm b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nm span{font-size:12px;color:var(--mu)}
+.px{text-align:right;font-size:14px;font-weight:600;white-space:nowrap}
+.px span{display:block;font-size:11px;font-weight:400;color:var(--mu)}
+.dec{display:inline-block;margin-top:6px;font-size:12px;border-radius:6px;padding:2px 8px;color:#1c1e21}
+.nm b .det{color:#d4a017;font-weight:700}
+.lv{display:grid;grid-template-columns:auto 1fr 1fr;gap:6px;margin-top:8px;align-items:stretch}
+.lv .rt{background:none;padding:6px 2px 6px 0;display:flex;align-items:center;font-size:12px;font-weight:600;color:var(--tx)}
+.lv div{background:var(--bg);border-radius:8px;padding:6px 8px;font-size:12px;color:var(--mu)}
+.lv b{display:block;font-size:14px;color:var(--tx)}
+.lv .red b{color:#d93025}
+.more{display:none;margin-top:8px;font-size:13px;line-height:1.45;border-top:1px solid var(--li);padding-top:8px}
+.card.open .more{display:block}
+.more p{margin:4px 0}
+.more i{color:var(--mu);font-style:normal}
+.alerta{color:#d93025;font-weight:600}
+.vazio{text-align:center;color:var(--mu);margin-top:40px}
+.hold{display:inline-block;margin:6px 0 0 8px;font-size:13px;font-weight:600;color:var(--tx)}
+.sec{font-size:15px;font-weight:600;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--li)}
+</style>
+</head>
+<body>
+<header>
+<div style="display:flex;align-items:center;gap:8px"><h1 style="flex:1">Painel de ações</h1>
+<button id="bt" style="display:none;border:0;border-radius:8px;padding:6px 10px;background:rgba(255,255,255,.2);color:#fff;font-size:14px">↻ Atualizar</button></div>
+<div id="mn" style="display:none;margin-top:6px;gap:6px"><button class="tab" data-a="precos">Preços (~3 min)</button><button class="tab" data-a="completa">Tudo (~15 min)</button></div>
+<div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
+<div class="at" id="at"></div>
+<div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button></div>
+<div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
+<option value="nt">Nota global</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
+</header>
+<main id="lst"></main>
+<script>
+const D=__DATA__;
+document.getElementById('at').textContent=D.at;
+if(D.gh&&D.gh.t){
+  const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
+  bt.style.display='block';
+  bt.onclick=()=>{mn.style.display=mn.style.display==='flex'?'none':'flex';};
+  mn.querySelectorAll('button').forEach(b=>b.onclick=async()=>{
+    mn.style.display='none';av.style.display='block';av.textContent='A pedir a atualização…';
+    try{
+      const r=await fetch(`https://api.github.com/repos/${D.gh.o}/${D.gh.r}/actions/workflows/painel.yml/dispatches`,{method:'POST',
+        headers:{'Authorization':'Bearer '+D.gh.t,'Accept':'application/vnd.github+json'},body:JSON.stringify({ref:'main',inputs:{tipo:b.dataset.a}})});
+      if(r.status!==204) throw new Error('erro '+r.status);
+      av.textContent='Pedido enviado. A página recarrega sozinha quando os dados novos chegarem.';
+      const ini=Date.now();
+      const t=setInterval(async()=>{
+        try{const v=(await (await fetch('versao.txt?'+Date.now(),{cache:'no-store'})).text()).trim();
+          if(v&&v!==D.v){clearInterval(t);location.reload();}}catch(e){}
+        if(Date.now()-ini>30*60000){clearInterval(t);av.textContent='Ainda sem dados novos ao fim de 30 min: recarrega mais tarde.';}
+      },30000);
+    }catch(e){av.textContent='Não foi possível pedir a atualização ('+e.message+').';}
+  });
+}
+let aba='A';
+const cor=v=>v==null?'#d0d3d8':v>=4.5?'#63BE7B':v>=3.75?'#A9D18E':v>=2.75?'#E2EFDA':v>=2.25?'#F4B183':v>=1.5?'#FFEB9C':'#F8696B';
+const num=(v,c)=>v==null?'–':v.toLocaleString('pt-PT',{minimumFractionDigits:c,maximumFractionDigits:c});
+const pct=v=>v==null?'':(v>0?'+':'')+num(v*100,1)+'%';
+const pr=v=>v==null?'–':num(v,v>=1000?0:2);
+const eur=v=>'€ '+num(v,2);
+const esc=s=>(s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cartao(d){
+  const dc=d.dc||'';
+  const corDec=d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.pt!=null&&d.pt<3)?'#FFEB9C':cor(d.nt);
+  let h=`<div class="card"><div class="top"><div class="nota" style="background:${cor(d.nt)}">${d.nt==null?'–':num(d.nt,1)}</div>
+  <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
+  <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.qn!=null?`<span class="hold">${num(d.qn,2)} ações${d.pc!=null?' a '+pr(d.pc):''}${d.vd!=null?' · '+eur(d.vd):''}${d.le!=null?` · <span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))} (${pct(d.lpp)})</span>`:''}</span>`:''}
+  <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
+  <div>Máxima (ordem)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+  <div class="rt">Vendas</div><div>Razoável<b>${pr(d.va)} <small>${pct(d.vap)}</small></b></div>
+  <div class="red">Rede de segurança<b>${pr(d.vm)} <small>${pct(d.vmp)}</small></b></div></div><div class="more">`;
+  if(d.ea!=null) h+=`<p><i>Nota ponderada das ações:</i> ${num(d.ea,1)}</p>`;
+  if(d.q!=null||d.s!=null) h+=`<p><i>Qualidade:</i> ${d.q==null?'–':num(d.q,1)} · <i>Saúde:</i> ${d.s==null?'–':num(d.s,1)}</p>`;
+  if(d.sd) h+=`<p class="${String(d.sd).startsWith('ALERTA')?'alerta':''}">${esc(d.sd)}</p>`;
+  if(d.sg) h+=`<p><i>Médias 100/200:</i> ${esc(d.sg)}</p>`;
+  if(d.lp) h+=`<p><i>Longo prazo:</i> ${esc(d.lp)}</p>`;
+  if(d.ed) h+=`<p><i>ETF:</i> ${esc(d.ed)}</p>`;
+  if(d.ec) h+=`<p><i>Composição:</i> ${esc(d.ec)}</p>`;
+  if(d.cm) h+=`<p><i>Comentários:</i> ${esc(d.cm)}</p>`;
+  if(d.no) h+=`<p><i>Notas:</i> ${esc(d.no)}</p>`;
+  return h+'</div></div>';
+}
+function mostrar(){
+  const q=document.getElementById('q').value.trim().toLowerCase(), o=document.getElementById('o').value;
+  const prep=l=>{if(q) l=l.filter(d=>(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q));
+    return l.slice().sort((a,b)=>o==='n'?String(a.n).localeCompare(b.n):o==='tmp'?(b.tmp??-9)-(a.tmp??-9):
+      o==='vd'?(b.vd??-1)-(a.vd??-1):(b.nt??-9)-(a.nt??-9));};
+  const tot=l=>{const v=l.filter(d=>d.vd!=null);if(!v.length)return '';
+    const lp=l.filter(d=>d.le!=null).reduce((s,d)=>s+d.le,0);
+    return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}</span>`:'');};
+  const el=document.getElementById('lst');
+  let h='';
+  if(aba==='X'){
+    const a=prep(D.a.filter(d=>d.x)), e=prep(D.e.filter(d=>d.x));
+    const ta=D.a.concat(D.e).filter(d=>d.x&&d.vd!=null);
+    if(ta.length) h+=`<p class="hold" style="margin:8px 2px">Total detido${tot(ta)}</p>`;
+    if(a.length) h+=`<h2 class="sec">Ações (${a.length})${tot(a)}</h2>`+a.map(cartao).join('');
+    if(e.length) h+=`<h2 class="sec">ETFs (${e.length})${tot(e)}</h2>`+e.map(cartao).join('');
+  } else h=prep(aba==='A'?D.a:D.e).map(cartao).join('');
+  el.innerHTML=h||'<p class="vazio">Nada a mostrar.</p>';
+  el.querySelectorAll('.card').forEach(c=>c.addEventListener('click',()=>c.classList.toggle('open')));
+}
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
+document.getElementById('q').addEventListener('input',mostrar);
+document.getElementById('o').addEventListener('change',mostrar);
+mostrar();
+</script>
+</body>
+</html>
+'''
+
+
+# ---- publicação no GitHub Pages (endereço https fixo, para o atalho no telemóvel)
+# A página vai cifrada (AES-256-GCM, chave da palavra-passe por PBKDF2-SHA256): quem não a souber vê só a caixa.
+# Configuração (utilizador, repositório, token e palavra-passe) num ficheiro só deste PC, fora do OneDrive.
+GH_USER, GH_REPO = "MiguelAlbergaria13", "painel-acoes"
+GH_URL = f"https://{GH_USER.lower()}.github.io/{GH_REPO}/"
+FICH_GH = os.path.join(os.environ.get("APPDATA") or PASTA, "PainelAcoes", "github.json")
+PBKDF2_ITER = 200000
+PUB_TPL = r'''<!DOCTYPE html>
+<html lang="pt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1f3b57"><meta name="mobile-web-app-capable" content="yes">
+<title>Painel de ações</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,Roboto,sans-serif;background:#f4f5f7;color:#1c1e21;display:flex;min-height:100vh;align-items:center;justify-content:center}
+@media (prefers-color-scheme:dark){body{background:#121417;color:#e8eaed}}
+form{width:min(320px,90vw);text-align:center}
+h1{font-size:20px;font-weight:600}
+input{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border-radius:10px;border:1px solid #bbb;margin:10px 0}
+button{width:100%;font-size:17px;padding:12px;border:0;border-radius:10px;background:#1f3b57;color:#fff}
+label{font-size:14px;display:flex;gap:8px;align-items:center;justify-content:center;margin-top:6px}
+#e{color:#d93025;font-size:14px;min-height:20px}
+</style></head><body>
+<form id="f"><h1>Painel de ações</h1>
+<input id="p" type="password" placeholder="Palavra-passe" autocomplete="current-password">
+<button>Abrir</button><label><input id="m" type="checkbox" checked style="width:auto;margin:0"> lembrar neste telemóvel</label>
+<p id="e"></p></form>
+<script>
+const DADOS="__DADOS__", ITER=__ITER__;
+function b64(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}
+async function abrir(pw){
+  const b=b64(DADOS), sal=b.slice(0,16), iv=b.slice(16,28), ct=b.slice(28);
+  const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+  const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:sal,iterations:ITER,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
+  const html=new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},k,ct));
+  document.open();document.write(html);document.close();
+}
+let guardada=null;try{guardada=localStorage.getItem('painel_pw');}catch(e){}
+if(guardada) abrir(guardada).catch(()=>{try{localStorage.removeItem('painel_pw');}catch(e){}});
+document.getElementById('f').addEventListener('submit',async ev=>{
+  ev.preventDefault();const pw=document.getElementById('p').value;
+  try{ if(document.getElementById('m').checked){try{localStorage.setItem('painel_pw',pw);}catch(e){}} await abrir(pw);}
+  catch(e){try{localStorage.removeItem('painel_pw');}catch(x){} document.getElementById('e').textContent='Palavra-passe errada.';}
+});
+</script></body></html>
+'''
+
+
+def _ler_cfg_gh():
+    try:
+        with open(FICH_GH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _config_github():
+    """Lê (ou pergunta, na 1.ª vez) o token e a palavra-passe. None se a publicação estiver desligada."""
+    try:
+        with open(FICH_GH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    # alternativa à janela preta: ficheiro _Painel_github.txt na pasta do painel, com o token na 1.ª linha e a
+    # palavra-passe na 2.ª; o script guarda-os fora do OneDrive e apaga o ficheiro
+    ftxt = os.path.join(PASTA, BASE + "_github.txt")
+    if os.path.exists(ftxt):
+        try:
+            with open(ftxt, encoding="utf-8-sig") as f:
+                ls = [x.strip() for x in f.read().splitlines() if x.strip()]
+            if len(ls) >= 2 and len(ls[1]) >= 8:
+                cfg = {"user": GH_USER, "repo": GH_REPO, "token": ls[0], "senha": ls[1]}
+                if len(ls) >= 3:
+                    cfg["token_botao"] = ls[2]
+                os.makedirs(os.path.dirname(FICH_GH), exist_ok=True)
+                with open(FICH_GH, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f)
+                os.remove(ftxt)
+                print(f"Token e palavra-passe lidos de {os.path.basename(ftxt)} (guardados neste PC; o ficheiro foi apagado).")
+                return cfg
+            print(f"   aviso: {os.path.basename(ftxt)} precisa do token na 1.ª linha e da palavra-passe "
+                  "(mín. 8 caracteres) na 2.ª.")
+        except Exception as e:
+            print(f"   aviso: não consegui ler {os.path.basename(ftxt)} ({e}).")
+    if cfg.get("desligado"):
+        return None
+    if cfg.get("token") and cfg.get("senha"):
+        return cfg
+    if not sys.stdin or not sys.stdin.isatty():
+        return None
+    import getpass
+    print("\n=== Publicar a página do telemóvel em " + GH_URL + " ===")
+    print("Cola o token do GitHub (github_pat_... ou ghp_...): Ctrl+V ou botão direito do rato, e depois Enter.")
+    print(f"(Se não conseguir colar: Enter vazio, e cria o ficheiro {BASE}_github.txt na pasta do painel com o token")
+    print(" na 1.ª linha e a palavra-passe na 2.ª; na atualização seguinte o script lê-o e apaga-o.)")
+    tok = input("Token: ").strip()
+    if not tok:
+        print(f"   Sem token: não publico desta vez (cria {BASE}_github.txt ou volta a atualizar para colar).")
+        return None
+    else:
+        while True:
+            s1 = getpass.getpass("Palavra-passe para abrir a página (mín. 8 caracteres): ")
+            s2 = getpass.getpass("Repete a palavra-passe: ")
+            if len(s1) >= 8 and s1 == s2:
+                break
+            print("   Não coincidem ou têm menos de 8 caracteres; outra vez.")
+        cfg = {"user": GH_USER, "repo": GH_REPO, "token": tok, "senha": s1}
+    os.makedirs(os.path.dirname(FICH_GH), exist_ok=True)
+    with open(FICH_GH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    return cfg
+
+
+def _cifrar(texto, senha):
+    import base64, hashlib
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        print("   A instalar o módulo de cifra (cryptography), só na 1.ª vez...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "-q", "cryptography"], timeout=300)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    sal, iv = os.urandom(16), os.urandom(12)
+    chave = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), sal, PBKDF2_ITER, 32)
+    return base64.b64encode(sal + iv + AESGCM(chave).encrypt(iv, texto.encode("utf-8"), None)).decode()
+
+
+def _decifrar(b64, senha):
+    import base64, hashlib
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    b = base64.b64decode(b64)
+    chave = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), b[:16], PBKDF2_ITER, 32)
+    return AESGCM(chave).decrypt(b[16:28], b[28:], None).decode("utf-8")
+
+
+def _json_num(o):
+    try:
+        return float(o)
+    except Exception:
+        return str(o)
+
+
+def pagina_cifrada(html, senha):
+    return PUB_TPL.replace("__DADOS__", _cifrar(html, senha)).replace("__ITER__", str(PBKDF2_ITER))
+
+
+GH_RAMO_PAGINA = "gh-pages"      # a página (e os dados das atualizações automáticas) vivem neste ramo
+
+
+def _api_github(cfg, caminho, corpo=None, metodo=None):
+    import urllib.request
+    url = f"https://api.github.com/repos/{cfg.get('user', GH_USER)}/{cfg.get('repo', GH_REPO)}/{caminho}"
+    cab = {"Authorization": f"Bearer {cfg['token']}", "Accept": "application/vnd.github+json",
+           "User-Agent": "painel-acoes", "X-GitHub-Api-Version": "2022-11-28"}
+    req = urllib.request.Request(url, data=json.dumps(corpo).encode() if corpo is not None else None, headers=cab,
+                                 method=metodo or ("POST" if corpo is not None else "GET"))
+    with urllib.request.urlopen(req, timeout=90) as r:
+        t = r.read()
+        return json.loads(t) if t else {}
+
+
+def _garantir_ramo(cfg, ramo):
+    """Cria o ramo (a partir do main) se ainda não existir."""
+    import urllib.error
+    try:
+        _api_github(cfg, f"git/ref/heads/{ramo}")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        sha = _api_github(cfg, "git/ref/heads/main")["object"]["sha"]
+        _api_github(cfg, "git/refs", {"ref": f"refs/heads/{ramo}", "sha": sha})
+
+
+def _enviar_github(cfg, nome, conteudo, ramo="main"):
+    """Cria ou substitui um ficheiro no repositório (API de conteúdos), no ramo indicado."""
+    import base64, urllib.request, urllib.error
+    if ramo != "main":
+        _garantir_ramo(cfg, ramo)
+    api = f"https://api.github.com/repos/{cfg.get('user', GH_USER)}/{cfg.get('repo', GH_REPO)}/contents/{nome}"
+    cab = {"Authorization": f"Bearer {cfg['token']}", "Accept": "application/vnd.github+json",
+           "User-Agent": "painel-acoes", "X-GitHub-Api-Version": "2022-11-28"}
+    sha = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(api + f"?ref={ramo}", headers=cab), timeout=30) as r:
+            sha = json.load(r).get("sha")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    corpo = {"message": f"{nome} {datetime.now():%d/%m/%Y %H:%M}", "branch": ramo,
+             "content": base64.b64encode(conteudo.encode("utf-8")).decode()}
+    if sha:
+        corpo["sha"] = sha
+    req = urllib.request.Request(api, data=json.dumps(corpo).encode(), headers=cab, method="PUT")
+    with urllib.request.urlopen(req, timeout=90):
+        pass
+
+
+def publicar_github(html, versao=""):
+    """Envia a página (cifrada) para o repositório; o GitHub Pages mostra-a em GH_URL ao fim de ~1 minuto. Depois de
+    um ▶ ATUALIZAR envia também as definições (cifradas) e o script, para as atualizações automáticas no GitHub."""
+    cfg = _config_github()
+    if not cfg:
+        return
+    import urllib.error
+    try:
+        pag = pagina_cifrada(html, cfg["senha"])
+        _enviar_github(cfg, "index.html", pag, GH_RAMO_PAGINA)       # gh-pages (o das atualizações automáticas)
+        _enviar_github(cfg, "versao.txt", versao, GH_RAMO_PAGINA)
+        _enviar_github(cfg, "ocultos.enc", _cifrar(json.dumps(sorted(OCULTOS)), cfg["senha"]))
+        if SYNC:
+            defs = dict(SYNC, token_botao=cfg.get("token_botao"), enviado=f"{datetime.now():%d/%m/%Y %H:%M}")
+            _enviar_github(cfg, "config.enc", _cifrar(json.dumps(defs, ensure_ascii=False, default=_json_num), cfg["senha"]))
+            with open(os.path.abspath(__file__), encoding="utf-8") as f:
+                _enviar_github(cfg, "_Painel_acoes.py", f.read())
+        print(f"Página publicada: {GH_URL}  (fica visível ao fim de 1-2 minutos)"
+              + ("; definições enviadas para as atualizações automáticas" if SYNC else ""))
+        registo("publicada no GitHub")
+    except urllib.error.HTTPError as e:
+        msg = {401: "token inválido ou expirado", 403: "o token não tem permissão de escrita neste repositório",
+               404: "repositório não encontrado (nome ou acesso do token)"}.get(e.code, f"erro {e.code}")
+        print(f"   aviso: não publiquei no GitHub ({msg}). Para mudar o token, apaga {FICH_GH} e atualiza outra vez.")
+        registo(f"GitHub: {msg}")
+    except Exception as e:
+        print(f"   aviso: não publiquei no GitHub ({e}).")
+        registo(f"GitHub: {e}")
+
+
+BOTAO = None          # {"o": utilizador, "r": repositório, "t": token só de Actions} -> botão ↻ na página
+SYNC = {}             # definições do PC para o servidor (acrescentados, x, modo, longo prazo mínimo, ações dos ETFs)
+
+
+def valor_detido(d):
+    """Valor em euros do que tens (nº de ações × preço, convertido), se souber o nº de ações."""
+    carteira(d)
+    return d.get("valor_eur")
+
+
+def pagina_html(linhas, etfs, texto):
+    """(html, versão) da página para o telemóvel."""
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) and v == v else None
+
+    def item(d):
+        return {"n": txt(d.get("nome")), "c": txt(d.get("codigo")), "t": txt(d.get("ticker")), "m": txt(d.get("moeda")),
+                "p": num(d.get("preco")), "nt": num(d.get("nota")), "dc": txt(d.get("decisao")), "pt": num(d.get("pont")),
+                "x": e_detido(d.get("det")), "vd": valor_detido(d), "qn": num(d.get("qtd")) or qtd_detida(d.get("det")),
+                "pc": num(d.get("pcompra")), "le": num(d.get("lp_eur")), "lpp": num(d.get("lp_pct")),
+                "tm": num(d.get("teto")), "tmp": num(d.get("teto_pct")),
+                "cr": num(d.get("compra")), "crp": num(d.get("compra_pct")), "va": num(d.get("venda_alvo")),
+                "vap": num(d.get("venda_alvo_pct")), "vm": num(d.get("venda_min")), "vmp": num(d.get("venda_min_pct")),
+                "q": num(d.get("qual")), "s": num(d.get("saude_n")), "sd": txt(d.get("saude")) or None,
+                "sg": txt(d.get("sinal")) or None, "lp": txt(d.get("lp_txt")) or None, "cm": txt(d.get("coment")) or None,
+                "no": txt(d.get("notas")) or None, "ed": txt(d.get("etf_desc")) or None,
+                "ec": txt(d.get("etf_comp")) or None, "ea": num(d.get("etf_acoes"))}
+    versao = datetime.now().strftime("%Y%m%d%H%M%S")
+    vis = lambda d: txt(d.get("ticker")) and txt(d.get("ticker")).upper() not in OCULTOS
+    n_oc = sum(1 for d in list(linhas) + list(etfs) if txt(d.get("ticker")) and not vis(d))
+    dados = {"at": f"{texto} · {TXT_VERSAO}" + (f" · {n_oc} escondidos pelo filtro do Excel" if n_oc else ""),
+             "a": [item(d) for d in linhas if vis(d)], "e": [item(d) for d in etfs if vis(d)], "v": versao, "gh": BOTAO}
+    js = json.dumps(dados, ensure_ascii=False).replace("</", "<\\/")
+    return HTML_TPL.replace("__DATA__", js), versao
+
+
+def gerar_html(linhas, etfs, texto):
+    """Página para o telemóvel com nomes, notas, decisão e níveis de compra e venda (a situação do momento)."""
+    global BOTAO
+    try:
+        cfg = _ler_cfg_gh()
+        if cfg.get("token_botao"):
+            BOTAO = {"o": cfg.get("user", GH_USER), "r": cfg.get("repo", GH_REPO), "t": cfg["token_botao"]}
+        html, versao = pagina_html(linhas, etfs, texto)
+        with open(FICH_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"Página para o telemóvel: {os.path.basename(FICH_HTML)}")
+        publicar_github(html, versao)
+    except Exception as e:
+        print("   aviso: página para o telemóvel não gravada:", e)
+        registo(f"telemóvel: {e}")
+
+
+# ================================================================================================ Procurar / Acrescentados
+L_TAB = 12            # linha do cabeçalho da tabela das folhas Procurar
+C_ESTADO = "C9"       # estado das folhas Procurar
+# Folha 3 = Procurar ações (por nome/ticker, ou as mais significativas de uma região); folha 4 = Procurar ETFs
+FOLHA_PROC, FOLHA_PROC_ETF = 3, 4
+NOME_PROC = {FOLHA_PROC: "Procurar ações", FOLHA_PROC_ETF: "Procurar ETFs"}
+P_TXT, P_CRIT, P_REG, P_N = "C3", "C4", "C5", "C6"
+MAXP = 500            # nº máximo de resultados
+CAB_P = ["x", "Empresa / ETF", "Tipo", "Código", "Ticker Yahoo", "Bolsa", "Capitalização (mil M USD)",
+         "Moeda", "Já está em", "Pontuação / outras bolsas da mesma empresa ou fundo (não se copiam)"]
+NC_P = len(CAB_P)
+P_TAB = f"A{L_TAB + 1}:{get_column_letter(NC_P)}{L_TAB + MAXP}"
+CRITERIOS = ["Maior capitalização", "Mais transacionadas (valor médio/dia 3 meses)",
+             "Melhor pontuação (tendência + analistas)", "Maior potencial dos analistas", "Mais subiram em 12 meses",
+             "Baratas e a crescer (P/E até 15 e lucros +10%)"]
+CRITERIOS_ETF = ["Maior dimensão (património do fundo)", "Mais transacionados (valor médio/dia)",
+                 "Melhor pontuação (subida 6 meses + médias)", "Mais subiram em 12 meses"]
+# ETFs UCITS (compráveis na Europa) mais conhecidos por categoria: o Yahoo não tem filtro de ETFs, por isso o ★ parte
+# desta lista e ordena-a com os dados do Yahoo (património e negócio); os que o Yahoo não reconhecer ficam de fora.
+ETFS_CANDIDATOS = {
+    "Mundo": ["IWDA.AS", "VWCE.DE", "VWRL.AS", "XDWD.DE", "SSAC.L", "IUSN.DE", "EUNL.DE"],
+    "EUA": ["CSPX.AS", "SXR8.DE", "VUAA.DE", "VUSA.AS", "SXRV.DE", "CNDX.AS", "QDVE.DE", "ZPRV.DE"],
+    "Europa": ["EXSA.DE", "IMAE.AS", "VEUR.AS", "MEUD.PA", "EXW1.DE", "EXS1.DE", "CAC.PA", "IMIB.MI", "ISF.L"],
+    "Emergentes e Ásia": ["EMIM.AS", "IS3N.DE", "VFEM.AS", "XMME.DE", "IJPA.AS", "VJPN.AS"],
+    "Obrigações": ["IEGA.AS", "IEAC.AS", "EUNA.DE", "XGLE.DE", "IDTL.L", "VAGF.DE"],
+    "Ouro": ["4GLD.DE", "SGLN.L", "IGLN.L", "EWG2.DE", "SGLD.L"],
+    "Setores e temas": ["VVSM.DE", "QDVE.DE", "INRG.L", "2B76.DE", "IUHC.L"],
+    "Dividendos": ["VHYL.AS", "TDIV.AS", "ISPA.DE"],
+}
+CATEGORIAS_ETF = ["Todas"] + list(ETFS_CANDIDATOS)
+_EUROPA = ["gb", "de", "fr", "nl", "ch", "es", "it", "se", "dk", "no", "fi", "be", "pt", "ie", "at"]
+REGIOES = {"EUA": ["us"], "Europa": _EUROPA, "EUA + Europa": ["us"] + _EUROPA, "Portugal": ["pt"], "Reino Unido": ["gb"],
+           "Alemanha": ["de"], "França": ["fr"], "Países Baixos": ["nl"], "Espanha": ["es"], "Itália": ["it"],
+           "Suíça": ["ch"], "Nórdicos": ["se", "dk", "no", "fi"], "Canadá": ["ca"], "Japão": ["jp"], "Hong Kong": ["hk"],
+           "Singapura": ["sg"], "Austrália": ["au"]}
+FOLHA_ACR = 5
+A_TAB = f"A{AC_L0 + 1}:E{AC_L0 + MAX_LINHAS}"   # Empresa / ETF, Código, Ticker Yahoo, Bolsa, Tipo
+CAB_A = ["Empresa / ETF", "Código", "Ticker Yahoo", "Bolsa", "Tipo"]
+
+
+def folha_acrescentados(wb, acrescentados):
+    from openpyxl.worksheet.datavalidation import DataValidation
+    ws = wb.create_sheet("Acrescentados")
+    ws["A1"] = "Títulos acrescentados ao painel (além das listas do script)"
+    ws["A1"].font = Font(size=14, bold=True)
+    ws["A2"] = ("Vêm das folhas Procurar ações / Procurar ETFs (➕ ACRESCENTAR MARCADOS) ou escreve-os aqui à mão (o ticker "
+                "tem de ser o do Yahoo). Para tirar um título, apaga a linha: deixa de ser procurado no ▶ ATUALIZAR seguinte.")
+    ws["A2"].font = Font(italic=True, size=9, color="595959")
+    for j, (h, w) in enumerate(zip(CAB_A, (32, 10, 16, 20, 8)), 1):
+        c = ws.cell(AC_L0, j, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1F3864")
+        c.alignment = Alignment(horizontal="center")
+        ws.column_dimensions[get_column_letter(j)].width = w
+    for i, linha in enumerate(acrescentados, start=AC_L0 + 1):
+        for j, v in enumerate(linha, 1):
+            ws.cell(i, j, v)
+    dv = DataValidation(type="list", formula1='"Ação,ETF"', allow_blank=True)
+    ws.add_data_validation(dv)
+    dv.add(f"E{AC_L0 + 1}:E{AC_L0 + MAX_LINHAS}")
+    ws.freeze_panes = f"A{AC_L0 + 1}"
+
+
+def ler_acrescentados(ex, so_ficheiro=False):
+    """Linhas (nome, código, ticker, bolsa, tipo) da folha Acrescentados (linhas vazias pelo meio são saltadas). Procura a
+    folha pelo cabeçalho (a 5.ª nesta versão, a 4.ª nas anteriores)."""
+    ler = (lambda ops: _ops_ficheiro(ex.caminho, ops, False)) if so_ficheiro else ex.ops
+    for folha_n in (FOLHA_ACR, 4):
+        try:
+            cab = ler([{"op": "ler", "folha": folha_n, "rng": f"A{AC_L0}:E{AC_L0}"}])[0][0]
+        except SystemExit:
+            raise
+        except Exception:
+            continue
+        if [txt(v) for v in cab] == CAB_A:
+            break
+    else:
+        raise RuntimeError("folha Acrescentados não encontrada")
+    out = []
+    for r in ler([{"op": "ler", "folha": folha_n, "rng": A_TAB}])[0]:
+        r = (list(r) + [None] * 5)[:5]
+        t = txt(r[2])
+        if t:
+            tipo = "ETF" if txt(r[4]).upper() == "ETF" else "Ação"
+            out.append((txt(r[0]) or t, txt(r[1]) or t.split(".")[0], t, txt(r[3]), tipo))
+    return out
+
+
+def folha_procurar(wb, pf):
+    from openpyxl.styles import Alignment, Font, PatternFill
+    borda = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
+    amarelo = PatternFill("solid", fgColor="FFF2CC")
+    from openpyxl.worksheet.datavalidation import DataValidation
+    etf = pf == FOLHA_PROC_ETF
+    qual = "etfs" if etf else "acoes"
+    ws = wb.create_sheet(NOME_PROC[pf], pf - 1)
+    ws["A1"] = ("Procurar ETFs no Yahoo Finance (qualquer bolsa) e acrescentá-los ao painel" if etf else
+                "Procurar ações no Yahoo Finance (qualquer bolsa) e acrescentá-las ao painel")
+    ws["A1"].font = Font(size=14, bold=True)
+    campos = ((3, "Procurar (nome ou ticker):"), (4, "Ou os mais significativos:"), (5, "Categoria:"),
+              (6, "Quantos:")) if etf else (
+        (3, "Procurar (nome ou ticker):"), (4, "Ou as mais significativas:"), (5, "Região:"), (6, "Quantas:"))
+    for linha, t in campos:
+        c = ws.cell(linha, 2, t)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="right")
+        ws.merge_cells(f"C{linha}:H{linha}")
+        for col in "CDEFGH":
+            ws[f"{col}{linha}"].fill = amarelo
+            ws[f"{col}{linha}"].border = borda
+    ws[P_TXT] = None
+    if True:
+        crits, regs = (CRITERIOS_ETF, CATEGORIAS_ETF) if etf else (CRITERIOS, list(REGIOES))
+        ws[P_CRIT], ws[P_REG], ws[P_N] = crits[0], ("Todas" if etf else "EUA + Europa"), (30 if etf else 100)
+        ws[P_N].alignment = Alignment(horizontal="left")
+        lista = lambda itens: '"' + ",".join(itens) + '"'
+        for dv, cel in ((DataValidation(type="list", formula1=lista(crits)), P_CRIT),
+                        (DataValidation(type="list", formula1=lista(regs)), P_REG),
+                        (DataValidation(type="whole", operator="between", formula1="1", formula2=str(MAXP)), P_N)):
+            dv.error, dv.errorTitle, dv.allow_blank = ("Escolhe um valor da lista (Quantas: 1 a %d)." % MAXP,
+                                                      "Valor inválido", False)
+            ws.add_data_validation(dv)
+            dv.add(cel)
+    botao(ws, "B8", "▶ PROCURAR", f"{PROTOCOLO}://procurar/{qual}", "2E75B6", "1F4E79")
+    ws.merge_cells("D8:F8")
+    botao(ws, "D8", "★ MAIS SIGNIFICATIVOS" if etf else "★ MAIS SIGNIFICATIVAS", f"{PROTOCOLO}://top/{qual}",
+          "7030A0", "4B2070")
+    ws.merge_cells("G8:I8")
+    botao(ws, "G8", "➕ ACRESCENTAR MARCADOS", f"{PROTOCOLO}://acrescentar/{qual}", "00A050", "006E37")
+    ws.row_dimensions[8].height = 26
+    ws["B9"] = "Estado:"
+    ws["B9"].alignment = Alignment(horizontal="right")
+    ws[C_ESTADO] = ("Escreve um nome e carrega em ▶ PROCURAR, ou escolhe o critério e a " +
+                    ("categoria" if etf else "região") + " e carrega em ★.")
+    ws[C_ESTADO].font = Font(italic=True, color="595959")
+    ws["B10"] = (("▶ PROCURAR: os " + ("ETFs" if etf else "ações") + " que o Yahoo encontra para o texto em C3. ")
+                 + ("★ MAIS SIGNIFICATIVOS: os N ETFs europeus (UCITS) maiores (património) ou mais transacionados da "
+                    "categoria, a partir de uma lista dos mais conhecidos (o Yahoo não tem filtro de ETFs); a dimensão "
+                    "aparece na coluna G. " if etf else
+                    "★ MAIS SIGNIFICATIVAS: as N ações maiores (capitalização) ou mais transacionadas (valor "
+                    "médio por dia, 3 meses, só acima de 1 000 M de capitalização) da região. ")
+                 + "A mesma empresa / fundo em várias bolsas aparece uma só vez, na bolsa com mais negócio (as outras "
+                 "ficam na última coluna). Vêm marcados com x os que ainda não estão no painel; os que já lá estão não "
+                 "têm x e não se copiam. ➕ ACRESCENTAR MARCADOS: junta os que têm x à folha Acrescentados e às folhas "
+                 "Ranking / ETFs (com os dados todos).")
+    ws["B10"].font = Font(italic=True, size=9, color="595959")
+    ws["B10"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells("B10:J10")
+    ws.row_dimensions[10].height = 64
+    for j, h in enumerate(CAB_P, start=1):
+        c = ws.cell(L_TAB, j, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="C00000" if j == 1 else "1F3864")
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.row_dimensions[L_TAB].height = 30
+    from openpyxl.formatting.rule import FormulaRule
+    fim = L_TAB + MAXP
+    for i in range(L_TAB + 1, fim + 1):
+        ws.cell(i, 1).alignment = Alignment(horizontal="center")
+        ws.cell(i, 1).font = Font(bold=True, color="C00000")
+        ws.cell(i, 7).number_format = "#,##0.0"
+    ws.conditional_formatting.add(f"A{L_TAB + 1}:A{fim}", FormulaRule(
+        formula=[f'AND($E{L_TAB + 1}<>"",$I{L_TAB + 1}="")'], fill=PatternFill("solid", bgColor="FFF2CC"),
+        border=borda))
+    ws.conditional_formatting.add(f"B{L_TAB + 1}:J{fim}", FormulaRule(
+        formula=[f'AND($E{L_TAB + 1}<>"",$I{L_TAB + 1}<>"")'], font=Font(color="A6A6A6")))
+    ws.conditional_formatting.add(f"B{L_TAB + 1}:J{fim}", FormulaRule(
+        formula=[f'AND($E{L_TAB + 1}<>"",MOD(ROW(),2)=0)'], fill=PatternFill("solid", bgColor="D9D9D9")))
+    for col, w in zip("ABCDEFGHIJ", (4, 36, 8, 10, 16, 20, 14, 8, 14, 30)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = f"A{L_TAB + 1}"
+    ws.auto_filter.ref = f"A{L_TAB}:J{fim}"
+
+
+def _yf():
+    import logging
+    import warnings
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    warnings.filterwarnings("ignore")
+    import yfinance as yf
+    return yf
+
+
+_LEGAL = {"inc", "incorporated", "corp", "corporation", "co", "company", "plc", "sa", "s", "a", "se", "ag", "nv", "n",
+          "v", "spa", "p", "ltd", "limited", "group", "holding", "holdings", "the", "class", "ordinary", "shares", "adr",
+          "asa", "ab", "oyj", "as", "a/s", "kgaa", "bhd", "sab", "de", "cv", "reg", "registered", "pref"}
+
+
+def nome_norm(nome):
+    """Nome sem acentos, pontuação, conteúdo entre parênteses nem formas jurídicas (para juntar a mesma empresa)."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(nome or "")).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"\([^)]*\)", " ", s)
+    s = re.sub(r"[^a-z0-9& ]+", " ", s)
+    return " ".join(w for w in s.split() if w not in _LEGAL)
+
+
+def _ja_no_painel(ex):
+    """Tickers e nomes já no painel (listas do script + folha Acrescentados) -> onde estão."""
+    ja = {t.upper(): "Ranking" for _, _, t, _ in ACOES}
+    ja.update({t.upper(): "ETFs" for _, _, t, _ in ETFS})
+    nomes = {nome_norm(n): "Ranking" for n, _, _, _ in ACOES}
+    nomes.update({nome_norm(n): "ETFs" for n, _, _, _ in ETFS})
+    for n, c, t, b, tipo in ler_acrescentados(ex):
+        ja.setdefault(t.upper(), "Acrescentados")
+        nomes.setdefault(nome_norm(n), "Acrescentados")
+    try:                                   # a mesma ação noutra bolsa (em euros, nos EUA ou a principal) também conta
+        with open(FICH_EUR, encoding="utf-8") as f:
+            for cm in json.load(f).values():
+                for t, v in cm.items():
+                    if v.get("alt") and t.upper() in ja:
+                        ja.setdefault(v["alt"].upper(), ja[t.upper()])
+    except Exception:
+        pass
+    nomes.pop("", None)
+    return ja, nomes
+
+
+def _agrupar(yf, quotes, ja, nomes):
+    """Junta a mesma empresa / fundo (mesmo nome) listada em várias bolsas e fica com a listagem preferida pelo modo
+    (€: uma bolsa em euros; $: uma bolsa americana; lista base: a com mais negócio, em euros, nos últimos 5 dias).
+    No modo "todas as bolsas" não junta: cada listagem é uma linha (já está = esse mesmo ticker).
+    Devolve [(quote escolhida, outras, onde já está)]."""
+    modo = modo_atual()
+    if modo == "todos":
+        return [(q, [], ja.get(q["symbol"].upper())) for q in quotes]
+    pref = (lambda s: 0 if em_euros(s) else 1) if modo == "eur" else (lambda s: 0 if nos_eua(s) else 1) \
+        if modo == "eua" else (lambda s: 0)
+    grupos = {}
+    for q in quotes:
+        nome = q.get("longname") or q.get("longName") or q.get("shortname") or q.get("shortName") or q["symbol"]
+        grupos.setdefault(nome_norm(nome) or q["symbol"], []).append(q)
+    simbolos = [q["symbol"] for g in grupos.values() if len(g) > 1 for q in g]
+    neg = {}
+    if simbolos:
+        try:
+            h = _por_ticker(yf.download(simbolos, period="5d", interval="1d", group_by="ticker", auto_adjust=False,
+                                        threads=True, progress=False), simbolos)
+            tx = taxas_eur({moeda_prevista(s) for s in simbolos} | {"USD"})
+            for s in simbolos:
+                if s in h and len(h[s].dropna(subset=["Close"])):
+                    x = h[s].dropna(subset=["Close"])
+                    f = tx.get(moeda_prevista(s) or "USD", (None, None))[1] or 0
+                    neg[s] = float((x["Close"] * x["Volume"].fillna(0)).mean()) * f
+        except Exception:
+            pass
+    out = []
+    for chave, g in grupos.items():
+        g = sorted(g, key=lambda q: (pref(q["symbol"]), -neg.get(q["symbol"], -1)))
+        onde = next((ja[q["symbol"].upper()] for q in g if q["symbol"].upper() in ja), None) or nomes.get(chave)
+        out.append((g[0], [q["symbol"] for q in g[1:]], onde))
+    return out
+
+
+def _escrever_resultados(ex, pf, linhas, estado):
+    linhas = [[None if v in ("", None) else v for v in l] for l in linhas[:MAXP]]
+    linhas += [[None] * NC_P] * (MAXP - len(linhas))
+    com_filtros(ex, [{"op": "escrever", "folha": pf, "rng": P_TAB, "valores": linhas},
+                     {"op": "escrever", "folha": pf, "rng": C_ESTADO, "valores": [[estado]]}], [pf])
+    print(estado)
+
+
+def _procurar_formato_ok(ex, pf):
+    if txt(ex.ops([{"op": "ler", "folha": pf, "rng": f"J{L_TAB}"}])[0][0][0]) != CAB_P[-1]:
+        raise SystemExit("As folhas Procurar são da versão anterior: carrega primeiro em ▶ ATUALIZAR (o painel passa ao "
+                         "formato novo, com Procurar ações e Procurar ETFs separadas).")
+
+
+def procurar_nome(pf):
+    ex = Excel(FICHEIRO)
+    _procurar_formato_ok(ex, pf)
+    etf = pf == FOLHA_PROC_ETF
+    texto = txt(ex.ops([{"op": "ler", "folha": pf, "rng": P_TXT}])[0][0][0])
+    if not texto:
+        raise SystemExit(f"Escreve em {P_TXT} (folha {NOME_PROC[pf]}) o nome ou o ticker a procurar.")
+    print(f"A procurar '{texto}' no Yahoo ({'ETFs' if etf else 'ações'})...")
+    yf = _yf()
+    try:
+        quotes = yf.Search(texto, max_results=40, news_count=0, lists_count=0, raise_errors=True).quotes or []
+    except Exception as e:
+        raise SystemExit(f"Não consegui procurar no Yahoo ({e}). Confirma a ligação à internet e tenta outra vez.")
+    quotes = [q for q in quotes if q.get("symbol") and q.get("quoteType") == ("ETF" if etf else "EQUITY")]
+    ja, nomes = _ja_no_painel(ex)
+    linhas, novos = [], 0
+    for q, outras, onde in _agrupar(yf, quotes, ja, nomes):
+        t = q["symbol"]
+        novos += not onde
+        linhas.append(["x" if not onde else None, q.get("longname") or q.get("shortname") or t,
+                       "ETF" if etf else "Ação", t.split(".")[0], t, q.get("exchDisp") or q.get("exchange"), None, None,
+                       onde, ", ".join(outras) or None])
+    _escrever_resultados(ex, pf, linhas, f"{datetime.now():%d/%m/%Y %H:%M} · '{texto}': {len(linhas)} resultado(s), "
+                                         f"{novos} ainda não estão no painel (marcados com x). Tira os x que não quiseres "
+                                         "e carrega em ➕ ACRESCENTAR MARCADOS.")
+    time.sleep(2)
+
+
+def _taxas_usd(yf, moedas):
+    """Taxa para dólares da moeda principal de cada moeda do Yahoo. Devolve (taxa da capitalização, taxa do preço):
+    em Londres (GBp), Joanesburgo (ZAc) e Telavive (ILA) o preço vem em cêntimos mas a capitalização vem na moeda principal."""
+    menor = {"GBp": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
+    pedir = {menor.get(m, m) for m in moedas if m and menor.get(m, m) != "USD"}
+    tx = {"USD": 1.0}
+    if pedir:
+        try:
+            h = yf.download([f"{m}USD=X" for m in pedir], period="10d", progress=False, auto_adjust=True, threads=True)
+            fecho = h["Close"] if "Close" in h else h
+            for m in pedir:
+                col = f"{m}USD=X"
+                if col in fecho and fecho[col].dropna().size:
+                    tx[m] = float(fecho[col].dropna().iloc[-1])
+        except Exception as e:
+            print("   aviso: sem câmbios para dólares:", e)
+    out = {}
+    for m in set(moedas) | {"USD"}:
+        if not m:
+            continue
+        t = tx.get(menor.get(m, m))
+        out[m] = (t, t / 100 if (t and m in menor) else t)
+    return out
+
+
+def _rating(x):
+    """'1.8 - Buy' -> 1.8 (1 = compra forte … 5 = venda)."""
+    try:
+        return float(str(x.get("averageAnalystRating") or "").split("-")[0])
+    except ValueError:
+        return None
+
+
+def _por_qualidade(yf, cand, n, so_potencial=False):
+    """Pontuação como no painel (tendência das médias + potencial dos analistas; sem valor justo, que é demorado):
+    1) pré-escolha com os dados do filtro (média 50 acima da 200, opinião dos analistas); 2) para os ~3×N melhores, vai
+    buscar o preço-alvo; 3) ordena pela pontuação e, em empate, pelo potencial (ou só pelo potencial)."""
+    pre = []
+    for chave, cap_usd, x in cand:
+        m50, m200, rt = _num(x.get("fiftyDayAverage")), _num(x.get("twoHundredDayAverage")), _rating(x)
+        if rt is not None and rt > (3.0 if so_potencial else 2.5):
+            continue
+        g = m50 / m200 - 1 if (m50 and m200) else None
+        if not so_potencial and (g is None or g < -PROXIMO):
+            continue
+        pre.append(((rt or 3.0) - (g or 0) * 5, cap_usd, x, g))
+    pre.sort(key=lambda c: c[0])
+    pre = pre[:max(3 * n, 30)]
+    print(f"   {len(pre)} pré-escolhidas; a ir buscar o preço-alvo dos analistas...")
+    out = []
+    for _, cap_usd, x, g in pre:
+        try:
+            inf = yf.Ticker(x["symbol"]).info or {}
+        except Exception:
+            continue
+        p, alvo = _num(inf.get("regularMarketPrice") or inf.get("currentPrice")), _num(inf.get("targetMeanPrice"))
+        if not (p and alvo) or (inf.get("numberOfAnalystOpinions") or 0) < 3:
+            continue
+        pot = alvo / p - 1
+        d = {"tipo": "Ação", "pot": pot, "justo_pct": None, "mm100c": _num(x.get("fiftyDayAverage")),
+             "mm200c": _num(x.get("twoHundredDayAverage")), "gap5": None, "venda_min": None}
+        pontuar(d, p)
+        x["_nota"] = f"pontuação {d.get('pont')} · analistas {pot:+.0%}"
+        out.append(((pot if so_potencial else (d.get("pont") or 0) * 10 + pot), cap_usd, x))
+        time.sleep(0.15)
+    out.sort(key=lambda c: -c[0])
+    return out
+
+
+def mais_significativas():
+    ex = Excel(FICHEIRO)
+    _procurar_formato_ok(ex, FOLHA_PROC)
+    r = ex.ops([{"op": "ler", "folha": FOLHA_PROC, "rng": c} for c in (P_CRIT, P_REG, P_N)])
+    crit, reg, n = txt(r[0][0][0]) or CRITERIOS[0], txt(r[1][0][0]) or "EUA + Europa", txt(r[2][0][0]) or "100"
+    try:
+        n = max(1, min(MAXP, int(float(n))))
+    except ValueError:
+        n = 100
+    if reg not in REGIOES:
+        raise SystemExit(f"Região desconhecida: '{reg}'. Escolhe uma da lista em {P_REG}.")
+    yf = _yf()
+    if not hasattr(yf, "screen") or not hasattr(yf, "EquityQuery"):
+        raise SystemExit("O teu yfinance é antigo e não tem o filtro de ações. Atualiza-o (numa linha de comandos):\n"
+                         "   python -m pip install -U yfinance")
+    if crit not in CRITERIOS:
+        crit = CRITERIOS[0]
+    volume = crit == CRITERIOS[1]
+    qualidade = crit in (CRITERIOS[2], CRITERIOS[3])     # precisam de analistas: universo largo, depois escolhe-se
+    filtros, campo = [yf.EquityQuery("gt", ["intradaymarketcap", 1e9 if volume else 0])], "intradaymarketcap"
+    if volume:
+        campo = "avgdailyvol3m"
+    elif qualidade:
+        filtros = [yf.EquityQuery("gt", ["intradaymarketcap", 3e8])]    # inclui médias empresas (p. ex. a Soitec)
+    elif crit == CRITERIOS[4]:
+        filtros, campo = [yf.EquityQuery("gt", ["intradaymarketcap", 1e9])], "fiftytwowkpercentchange"
+    elif crit == CRITERIOS[5]:
+        filtros = [yf.EquityQuery("gt", ["intradaymarketcap", 5e8]),
+                   yf.EquityQuery("btwn", ["peratio.lasttwelvemonths", 0, 15]),
+                   yf.EquityQuery("gt", ["epsgrowth.lasttwelvemonths", 10])]
+    print(f"A pedir ao Yahoo: {crit} · {reg} · {n}...")
+    quotes = []
+    for regiao in REGIOES[reg]:
+        q = yf.EquityQuery("and", [yf.EquityQuery("eq", ["region", regiao])] + filtros)
+        pedidos = min(MAXP, 500 if qualidade else n * 2 if volume else n)   # pontuação/analistas: universo maior
+        offset = 0
+        while offset < pedidos:
+            try:
+                res = yf.screen(q, offset=offset, size=min(250, pedidos - offset), sortField=campo, sortAsc=False)
+            except Exception as e:
+                print(f"   aviso: {regiao}: {e}")
+                break
+            lote = (res or {}).get("quotes") or []
+            for x in lote:
+                x["_regiao"] = regiao
+            quotes += lote
+            if len(lote) < min(250, pedidos - offset):
+                break
+            offset += len(lote)
+        print(f"   {regiao}: {sum(1 for x in quotes if x['_regiao'] == regiao)} títulos")
+    if not quotes:
+        raise SystemExit("O Yahoo não devolveu resultados. Tenta outra vez daqui a pouco (ou outra região).")
+    tx = _taxas_usd(yf, {x.get("currency") for x in quotes})
+    vistos, cand = set(), []
+    for x in quotes:
+        t = x.get("symbol")
+        if not t or t in vistos or x.get("quoteType", "EQUITY") != "EQUITY":
+            continue
+        vistos.add(t)
+        f_cap, f_preco = tx.get(x.get("currency") or "USD", (None, None))
+        cap = x.get("marketCap")
+        cap_usd = cap * f_cap if (cap and f_cap) else None
+        if volume:
+            vol, preco = x.get("averageDailyVolume3Month"), x.get("regularMarketPrice")
+            chave = vol * preco * f_preco if (vol and preco and f_preco) else None
+        elif crit == CRITERIOS[4]:
+            chave = _num(x.get("fiftyTwoWeekChangePercent"))
+            if chave is not None:
+                x["_nota"] = f"subida 12 meses {chave / 100:+.0%}"
+        else:
+            chave = cap_usd
+        cand.append((chave, cap_usd, x))
+    cand.sort(key=lambda c: (c[0] is None, -(c[0] or 0)))
+    if qualidade:
+        cand = _por_qualidade(yf, cand, n, so_potencial=crit == CRITERIOS[3])
+    ja, nomes = _ja_no_painel(ex)
+    linhas, novas, grupos = [], 0, {}
+    for chave, cap_usd, x in cand:                       # a mesma empresa em várias bolsas: fica a primeira (a maior)
+        k = nome_norm(x.get("longName") or x.get("shortName") or x["symbol"]) or x["symbol"]
+        if k in grupos:
+            grupos[k][-1].append(x["symbol"])
+            continue
+        if len(grupos) >= n:
+            continue
+        grupos[k] = [chave, cap_usd, x, []]
+    for k, (chave, cap_usd, x, outras) in grupos.items():
+        t = x["symbol"]
+        onde = ja.get(t.upper()) or next((ja[o.upper()] for o in outras if o.upper() in ja), None) or nomes.get(k)
+        novas += not onde
+        if x.get("_nota"):
+            outras = [x["_nota"]] + outras
+        linhas.append(["x" if not onde else None, x.get("longName") or x.get("shortName") or t, "Ação",
+                       t.split(".")[0], t, x.get("fullExchangeName") or x.get("exchange"),
+                       round(cap_usd / 1e9, 1) if cap_usd else None, x.get("currency"), onde, ", ".join(outras) or None])
+    _escrever_resultados(ex, FOLHA_PROC, linhas, f"{datetime.now():%d/%m/%Y %H:%M} · {crit} · {reg}: {len(linhas)} títulos, "
+                                     f"{novas} ainda não estão no painel (marcados com x). "
+                                     "Tira os x que não quiseres e carrega em ➕ ACRESCENTAR MARCADOS.")
+    time.sleep(2)
+
+
+def etfs_significativos():
+    """★ da folha Procurar ETFs: ordena os ETFs conhecidos da categoria pelo património ou pelo negócio (dados do Yahoo)."""
+    ex = Excel(FICHEIRO)
+    pf = FOLHA_PROC_ETF
+    _procurar_formato_ok(ex, pf)
+    r = ex.ops([{"op": "ler", "folha": pf, "rng": c} for c in (P_CRIT, P_REG, P_N)])
+    crit, cat, n = txt(r[0][0][0]) or CRITERIOS_ETF[0], txt(r[1][0][0]) or "Todas", txt(r[2][0][0]) or "30"
+    try:
+        n = max(1, min(MAXP, int(float(n))))
+    except ValueError:
+        n = 30
+    if cat not in CATEGORIAS_ETF:
+        raise SystemExit(f"Categoria desconhecida: '{cat}'. Escolhe uma da lista em {P_REG}.")
+    cands = list(dict.fromkeys(t for c, ts in ETFS_CANDIDATOS.items() if cat in ("Todas", c) for t in ts))
+    yf = _yf()
+    print(f"A pedir ao Yahoo os dados de {len(cands)} ETFs ({cat})...")
+    dados = []
+    for t in cands:
+        try:
+            inf = yf.Ticker(t).info or {}
+        except Exception:
+            inf = {}
+        p = _num(inf.get("regularMarketPrice") or inf.get("navPrice") or inf.get("previousClose"))
+        if not p:
+            print(f"   {t}: sem dados no Yahoo")
+            continue
+        dados.append((t, inf, p))
+        time.sleep(0.2)
+    tx = _taxas_usd(yf, {inf.get("currency") for _, inf, _ in dados})
+    tend = {}
+    if crit in CRITERIOS_ETF[2:]:                      # pontuação / subida: com as cotações do último ano e meio
+        lst = [t for t, _, _ in dados]
+        try:
+            h = _por_ticker(yf.download(lst, period="18mo", interval="1d", group_by="ticker", auto_adjust=True,
+                                        threads=True, progress=False), lst)
+        except Exception:
+            h = {}
+        for t in lst:
+            try:
+                c = h[t]["Close"].dropna()
+                m100, m200 = c.tail(100).mean(), c.tail(200).mean()
+                tend[t] = dict(g=m100 / m200 - 1 if len(c) >= 200 else None,
+                               m6=c.iloc[-1] / c.iloc[-127] - 1 if len(c) > 126 else None,
+                               m12=c.iloc[-1] / c.iloc[-253] - 1 if len(c) > 252 else None,
+                               p200=c.iloc[-1] / m200 - 1 if len(c) >= 200 else None)
+            except Exception:
+                pass
+        com6 = sorted([t for t in tend if tend[t].get("m6") is not None], key=lambda t: -tend[t]["m6"])
+        for i, t in enumerate(com6):
+            v = tend[t]
+            pos = i / (len(com6) - 1) if len(com6) > 1 else 0
+            g, p200, m6 = v.get("g"), v.get("p200"), v.get("m6")
+            v["pont"] = (5 if pos <= ETF_TOP5 and (g or 0) > 0 else 4 if pos <= ETF_TOP4 and (g or 0) > 0 else
+                         3 if (g or 0) > 0 else 1 if (p200 or 0) < 0 and m6 < 0 else 2)
+    linhas_c = []
+    for t, inf, p in dados:
+        f_maior, f_preco = tx.get(inf.get("currency") or "USD", (None, None))
+        aum = _num(inf.get("totalAssets") or inf.get("netAssets"))
+        aum_usd = aum * f_maior if (aum and f_maior) else None      # em geral na moeda principal do fundo
+        vol = _num(inf.get("averageVolume") or inf.get("averageDailyVolume3Month"))
+        neg = vol * p * f_preco if (vol and f_preco) else None
+        v = tend.get(t, {})
+        if crit == CRITERIOS_ETF[2]:
+            chave = (v["pont"] * 10 + v["m6"]) if v.get("pont") else None
+            inf["_nota"] = (f"pontuação {v['pont']} · subida 6 meses {v['m6']:+.0%}" if v.get("pont") else None)
+        elif crit == CRITERIOS_ETF[3]:
+            chave = v.get("m12")
+            inf["_nota"] = f"subida 12 meses {v['m12']:+.0%}" if v.get("m12") is not None else None
+        else:
+            chave = neg if crit == CRITERIOS_ETF[1] else aum_usd
+        linhas_c.append((chave, aum_usd, t, inf))
+    linhas_c.sort(key=lambda x: (x[0] is None, -(x[0] or 0)))
+    ja, nomes = _ja_no_painel(ex)
+    grupos = {}
+    for chave, aum_usd, t, inf in linhas_c:                # o mesmo fundo em várias bolsas: fica o primeiro (o maior)
+        nome = inf.get("longName") or inf.get("shortName") or t
+        k = nome_norm(nome) or t
+        if k in grupos:
+            grupos[k][-1].append(t)
+        elif len(grupos) < n:
+            grupos[k] = [aum_usd, t, inf, []]
+    linhas, novos = [], 0
+    for k, (aum_usd, t, inf, outras) in grupos.items():
+        onde = ja.get(t.upper()) or next((ja[o.upper()] for o in outras if o.upper() in ja), None) or nomes.get(k)
+        novos += not onde
+        if inf.get("_nota"):
+            outras = [inf["_nota"]] + outras
+        linhas.append(["x" if not onde else None, inf.get("longName") or inf.get("shortName") or t, "ETF",
+                       t.split(".")[0], t, inf.get("fullExchangeName") or inf.get("exchange"),
+                       round(aum_usd / 1e9, 1) if aum_usd else None, inf.get("currency"), onde,
+                       ", ".join(outras) or None])
+    _escrever_resultados(ex, pf, linhas, f"{datetime.now():%d/%m/%Y %H:%M} · {crit} · {cat}: {len(linhas)} ETFs, "
+                                         f"{novos} ainda não estão no painel (marcados com x; a coluna G é o património "
+                                         "em mil M USD). Tira os x que não quiseres e carrega em ➕ ACRESCENTAR MARCADOS.")
+    time.sleep(2)
+
+
+def acrescentar_marcados(pf):
+    ex = Excel(FICHEIRO)
+    _procurar_formato_ok(ex, pf)
+    res = ex.ops([{"op": "ler", "folha": pf, "rng": P_TAB}])[0]
+    atuais = ler_acrescentados(ex)
+    ja, nomes = _ja_no_painel(ex)
+    novos = 0
+    res = [(list(r) + [None] * NC_P)[:NC_P] for r in res]
+    for r in res:
+        if not txt(r[0]) or not txt(r[4]):
+            continue
+        t = txt(r[4])
+        outras = [o.strip().upper() for o in txt(r[9]).split(",") if o.strip()]
+        ja_esta = t.upper() in ja or any(o in ja for o in outras) or nome_norm(r[1]) in nomes
+        if not ja_esta:
+            atuais.append((txt(r[1]) or t, txt(r[3]) or t.split(".")[0], t, txt(r[5]),
+                           "ETF" if txt(r[2]).upper() == "ETF" else "Ação"))
+            ja[t.upper()] = "Acrescentados"
+            nomes[nome_norm(r[1])] = "Acrescentados"
+            novos += 1
+        r[0], r[8] = None, ja.get(t.upper()) or next((ja[o] for o in outras if o in ja), None) or nomes.get(nome_norm(r[1]))
+    if not novos:
+        raise SystemExit(f"Nenhum título novo marcado com x na folha {NOME_PROC[pf]} (os marcados já estavam no painel).")
+    linhas = [list(a) for a in atuais][:MAX_LINHAS]
+    linhas += [[None] * 5] * (MAX_LINHAS - len(linhas))
+    msg = (f"{datetime.now():%d/%m/%Y %H:%M} · {novos} título(s) acrescentado(s) à folha Acrescentados e às folhas "
+           "Ranking / ETFs.")
+    res = [[None if v in ("", None) else v for v in r] for r in res]
+    guardar_copia_acr(atuais)
+    folha_a = FOLHA_ACR if [txt(v) for v in ex.ops([{"op": "ler", "folha": FOLHA_ACR, "rng": f"A{AC_L0}:E{AC_L0}"}])[0][0]] == CAB_A else 4
+    com_filtros(ex, [{"op": "escrever", "folha": folha_a, "rng": A_TAB, "valores": linhas},
+                     {"op": "escrever", "folha": pf, "rng": P_TAB, "valores": res},
+                     {"op": "escrever", "folha": pf, "rng": C_ESTADO, "valores": [[msg]]}], [folha_a, pf])
+    print(msg)
+    incluir_novos(atuais[-novos:])
+    time.sleep(3)
+
+
+def tirar_marca_internet():
+    """Ficheiros vindos da internet (ou de um zip descarregado) abrem no Excel em Vista Protegida, que nenhum programa
+    consegue ler. Tira essa marca (Zone.Identifier) aos ficheiros desta ferramenta."""
+    if os.name != "nt":
+        return
+    for f in (FICHEIRO, BAT, os.path.abspath(__file__)):
+        try:
+            os.remove(f + ":Zone.Identifier")
+        except OSError:
+            pass
+
+
+LOG = os.path.join(PASTA, BASE + ".log")
+
+
+def registo(texto):
+    """Acrescenta uma linha ao ficheiro de registo (_Painel_acoes.log), que guarda as últimas 300 linhas."""
+    try:
+        linhas = open(LOG, encoding="utf-8").read().splitlines()[-299:] if os.path.exists(LOG) else []
+        linhas.append(f"{datetime.now():%d/%m/%Y %H:%M:%S}  {texto}")
+        open(LOG, "w", encoding="utf-8").write("\n".join(linhas) + "\n")
+    except Exception:
+        pass
+
+
+def atualizar_servidor(tipo):
+    """No GitHub Actions (sem Excel nem PC): 'completa' (como o ▶ ATUALIZAR) ou 'precos' (como o ↻ PREÇOS, sobre os
+    dados da última completa). Escreve index.html (cifrado), versao.txt e dados.enc; o workflow publica-os."""
+    global LP_MIN, REF, BOTAO
+    senha = os.environ.get("PAINEL_SENHA", "")
+    if len(senha) < 8:
+        raise SystemExit("Falta o segredo PAINEL_SENHA no repositório (Settings > Secrets and variables > Actions).")
+    cfg = {}
+    if os.path.exists(os.path.join(PASTA, "config.enc")):
+        with open(os.path.join(PASTA, "config.enc"), encoding="utf-8") as f:
+            cfg = json.loads(_decifrar(f.read().strip(), senha))
+        print(f"Definições do PC de {cfg.get('enviado', '?')}: {len(cfg.get('acrescentados', []))} acrescentados, "
+              f"{len(cfg.get('det', []))} detidos, bolsa {cfg.get('modo', 'eur')}.")
+    else:
+        print("Ainda sem definições do PC (config.enc): uso a lista base. Faz um ▶ ATUALIZAR no PC para as enviar.")
+    guardar_modo(cfg.get("modo", "eur"))
+    if cfg.get("dos_etfs") and not os.path.exists(FICH_ACOES_ETF):
+        _gravar_json(FICH_ACOES_ETF, cfg["dos_etfs"])
+    LP_MIN, REF = cfg.get("lp_min", LP_MIN), None
+    if cfg.get("token_botao"):
+        BOTAO = {"o": GH_USER, "r": GH_REPO, "t": cfg["token_botao"]}
+    fo = os.path.join(PASTA, "ocultos.enc")          # linhas escondidas pelos filtros do Excel (enviadas pelo PC)
+    if os.path.exists(fo):
+        with open(fo, encoding="utf-8") as f:
+            OCULTOS.update(json.loads(_decifrar(f.read().strip(), senha)))
+    fd = os.path.join(PASTA, "dados.enc")
+    if tipo == "precos" and os.path.exists(fd):
+        with open(fd, encoding="utf-8") as f:
+            dd = json.loads(_decifrar(f.read().strip(), senha))
+        linhas, etfs = dd["a"], dd["e"]
+        for d in linhas + etfs:
+            d["det"] = marca_detido(d, set(cfg.get("det", [])), cfg.get("qtd", {}))
+            d["qtd"] = d["pcompra"] = None
+            aplicar_compra(d, cfg.get("qtd", {}), cfg.get("pcompra", {}))
+        tickers = sorted({txt(d["ticker"]) for d in linhas + etfs if txt(d.get("ticker"))})
+        precos = precos_agora(tickers)
+        for d in linhas + etfs:
+            p = precos.get(txt(d.get("ticker")))
+            if p:
+                recalcular(d, *p)
+        pontuar_etfs(linhas)
+        pontuar_etfs(etfs)
+        ponderar_etfs(linhas, etfs, _ler_json(FICH_COMP, {}))
+        texto = (f"Preços automáticos de {datetime.now(): %d/%m/%Y %H:%M} UTC ({len(precos)} títulos); notas da "
+                 f"atualização completa de {dd.get('quando', '?')}")
+        quando = dd.get("quando", "?")
+    else:
+        linhas, etfs, texto = atualizar_tudo(servidor=cfg)
+        texto = texto.replace("Atualizado em", "Atualização automática em") + " (hora UTC)"
+        quando = f"{datetime.now():%d/%m/%Y %H:%M} UTC"
+    cambios_alt(linhas + etfs)                     # câmbio para euros (valor detido)
+    html, versao = pagina_html(linhas, etfs, texto)
+    with open(os.path.join(PASTA, "index.html"), "w", encoding="utf-8") as f:
+        f.write(pagina_cifrada(html, senha))
+    with open(os.path.join(PASTA, "versao.txt"), "w", encoding="utf-8") as f:
+        f.write(versao)
+    with open(fd, "w", encoding="utf-8") as f:
+        f.write(_cifrar(json.dumps({"a": linhas, "e": etfs, "quando": quando}, ensure_ascii=False, default=_json_num), senha))
+    print(f"Página gerada ({len(linhas)} ações, {len(etfs)} ETFs) · versão {versao}")
+
+
+def main():
+    if "--servidor" in sys.argv:             # GitHub Actions: python _Painel_acoes.py --servidor completa|precos
+        tipo = "precos" if "precos" in sys.argv else "completa"
+        print(f"Painel de ações · script {TXT_VERSAO} · servidor · {tipo}")
+        atualizar_servidor(tipo)
+        return
+    print(f"Painel de ações · script {TXT_VERSAO}")
+    registo(f"início · {TXT_VERSAO} · argumentos: {sys.argv[1:] or '(nenhum: duplo clique ou botão sem argumento)'} · bat: {BAT}")
+    tirar_marca_internet()
+    registar_botao()
+    arg = " ".join(sys.argv[1:]).lower()
+    if "--modelo" in arg:   # só a lista, sem dados (primeiro quadro)
+        vazio = lambda lista, tipo: [dict(nome=n, tipo=tipo, codigo=c, ticker=t, bolsa=b, notas="por atualizar")
+                                     for n, c, t, b in lista]
+        construir(vazio(ACOES, "Ação"), "Ainda sem dados: carrega em ▶ ATUALIZAR", vazio(ETFS, "ETF")).save(FICHEIRO)
+        print("modelo criado:", FICHEIRO)
+    elif "ordenar" in arg:                   # ↕ ORDENAR (painelacoes://ordenar/1 ou /2)
+        ordenar(2 if re.search(r"ordenar/+2", arg) else 1)
+    elif "procurar" in arg:                  # folhas Procurar: ▶ PROCURAR (/acoes ou /etfs)
+        procurar_nome(FOLHA_PROC_ETF if "etf" in arg else FOLHA_PROC)
+    elif "://top" in arg:                    # folhas Procurar: ★ MAIS SIGNIFICATIVAS / SIGNIFICATIVOS
+        if "etf" in arg:
+            etfs_significativos()
+        else:
+            mais_significativas()
+    elif "acrescentar" in arg:               # folhas Procurar: ➕ ACRESCENTAR MARCADOS (/acoes ou /etfs)
+        acrescentar_marcados(FOLHA_PROC_ETF if "etf" in arg else FOLHA_PROC)
+    elif "precos" in arg:                    # ↻ PREÇOS (rápido)
+        atualizar_precos()
+    elif "://modo" in arg:                   # ◎ / € / $ : bolsa preferida, e atualiza tudo
+        m = next((k for k in MODOS if re.search(rf"modo/+{k}", arg)), "eur")
+        guardar_modo(m)
+        print(f"Bolsa: {MODOS[m]}. A atualizar o painel...")
+        atualizar_tudo()
+    elif re.search(r"atualizar/+acoes", arg):   # ▶ ATUALIZAR AÇÕES (folha Ranking)
+        atualizar_tudo("acoes")
+    elif re.search(r"atualizar/+etfs", arg):    # ▶ ATUALIZAR ETFs (folha ETFs)
+        atualizar_tudo("etfs")
+    else:                                    # duplo clique no .bat (ou link antigo): tudo
+        atualizar_tudo()
+
+
+def ler_folha_atual(idx):
+    """Linhas e texto de atualização (K3) da folha idx (1 = Ranking, 2 = ETFs) do painel atual, para ficarem como estão
+    quando só se atualiza a outra folha. None se não der para ler (ou as colunas forem de outra versão)."""
+    if not os.path.exists(FICHEIRO):
+        return None
+    ultima = get_column_letter(len(COLS))
+    r = _tentar(Excel(FICHEIRO), [{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"},
+                                  {"op": "ler", "folha": idx, "rng": "K3"}])
+    if not r or not cab_ok([txt(v) for v in r[0][0]]):
+        return None
+    chaves = [k for k, *_ in COLS]
+    linhas = [linha_lida(chaves, v) for v in r[0][1:] if txt(linha_lida(chaves, v).get("ticker"))]
+    return linhas, txt(r[1][0][0]) or "Atualizado antes"
+
+
+def atualizar_tudo(so=None, servidor=None):
+    if True:
+        global REF, LP_MIN
+        outra = None
+        if servidor is not None:                 # no GitHub (sem Excel): definições vindas do PC
+            so = None
+        if so:                                   # a outra folha fica como está (lida antes de o Excel fechar)
+            outra = ler_folha_atual(2 if so == "acoes" else 1)
+            if outra is None:
+                print("Não foi possível ler a outra folha do painel atual: atualiza-se tudo.")
+                so = None
+        if servidor is not None:
+            criterios = None
+            acrescentados = [tuple(a) for a in servidor.get("acrescentados", [])]
+            estado = {"det": set(servidor.get("det", [])), "qtd": servidor.get("qtd", {}),
+                      "pcompra": servidor.get("pcompra", {}),
+                      "lp_min": servidor.get("lp_min", LP_MIN), "ref_escolha": "Atual"}
+        else:
+            criterios, acrescentados, estado = ler_estado()
+        LP_MIN = estado.get("lp_min", LP_MIN)
+        print(f"Longo prazo mínimo: {LP_MIN:.1%}/ano (abaixo disto, o que seria compra passa a 2.5 Não Rent. Longo Prazo).")
+        if not estado.get("det"):
+            estado["det"] = ler_detidos()
+            estado["qtd"] = ler_qtd()
+            estado["pcompra"] = ler_qtd("pcompra")
+        REF = data_ref(estado.get("ref_escolha"), estado.get("ref_data"))
+        if REF is not None:
+            print(f"Situação em {REF:%d/%m/%Y} (preços e médias dessa data; analistas e valor justo de hoje).")
+        dos_etfs = [tuple(x) for x in _ler_json(FICH_ACOES_ETF, [])]       # ações acrescentadas pelas composições
+        ja = {t.upper() for _, _, t, _, _ in acrescentados}
+        acr = list(acrescentados) + [(n, c, t, b, "Ação") for n, c, t, b in dos_etfs if t.upper() not in ja]
+        REPETIDOS.clear()
+        linhas, etfs = recolher(acr, so)
+        base = {a[2].upper() for a in ACOES + ETFS} | {t.upper() for _, _, t, _, _ in acrescentados}
+        if dos_etfs:                              # ações dos ETFs que afinal já estavam no painel: saem da lista
+            fica = [x for x in dos_etfs if x[2].upper() not in REPETIDOS and x[2].upper() not in base]
+            if len(fica) < len(dos_etfs):
+                _gravar_json(FICH_ACOES_ETF, [list(x) for x in fica])
+                print(f"   {len(dos_etfs) - len(fica)} ação(ões) dos ETFs já estavam no painel com outro ticker: retiradas da lista.")
+                dos_etfs = fica
+        sit = f" · SITUAÇÃO EM {REF:%d/%m/%Y}" if REF is not None else ""
+        agora = f"Atualizado em {datetime.now():%d/%m/%Y %H:%M}{sit} · script {TXT_VERSAO}"
+        if so == "acoes":
+            etfs, txt_e = outra
+            pontuar_etfs(etfs)
+        elif so == "etfs":
+            linhas, txt_a = outra
+        comp = _ler_json(FICH_COMP, {})
+        if so != "acoes":                       # composições novas; ações que faltam na folha Ranking -> acrescentam-se
+            comp.update(COMPOSICAO)
+            _gravar_json(FICH_COMP, comp)
+            falta = acoes_em_falta(linhas, etfs, comp)
+            if falta:
+                print(f"\n{len(falta)} ação(ões) das composições dos ETFs não estão na folha Ranking: a acrescentar...")
+                novas, _ = recolher((), "acoes", apenas=falta)
+                ja_tk = {txt(d.get("ticker")).upper() for d in linhas}
+                novas = [d for d in novas if d.get("preco") and d.get("pont") is not None
+                         and txt(d.get("ticker")).upper() not in ja_tk]
+                linhas = linhas + novas
+                bons = {txt(d.get("codigo")).upper() for d in novas} | {txt(d.get("ticker")).upper() for d in novas}
+                guardar = [list(x) for x in dos_etfs] + [list(x) for x in falta
+                                                         if x[2].upper() in bons or x[1].upper() in bons]
+                _gravar_json(FICH_ACOES_ETF, guardar)
+                comp["_sem_dados"] = sorted(set(comp.get("_sem_dados", [])) |
+                                            {x[2] for x in falta if x[2].upper() not in bons and x[1].upper() not in bons})
+                _gravar_json(FICH_COMP, comp)
+                print(f"   acrescentadas: {len(novas)} de {len(falta)} (as outras não têm dados no Yahoo)")
+        ponderar_etfs(linhas, etfs, comp)
+        n_alvo = sum(1 for d in linhas if isinstance(d.get("pot"), (int, float)))
+        if so is None:
+            texto = (f"{agora} · {len(linhas)} ações, {n_alvo} com preço-alvo · {len(etfs)} ETFs")
+        elif so == "acoes":
+            texto = (f"{agora} · {len(linhas)} ações, {n_alvo} com preço-alvo", txt_e)
+        else:
+            texto = (txt_a, f"{agora} · {len(etfs)} ETFs")
+        if servidor is not None:                # no GitHub: só os dados (a página é feita por atualizar_servidor)
+            for d in list(linhas) + list(etfs):
+                d["det"] = marca_detido(d, estado.get("det") or set(), estado.get("qtd") or {})
+                d["qtd"] = d["pcompra"] = None
+                aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
+            return linhas, etfs, texto
+        SYNC.update(acrescentados=[list(a) for a in acrescentados], det=sorted(x for x in (estado.get("det") or set()) if x),
+                    qtd=estado.get("qtd", {}), pcompra=estado.get("pcompra", {}),
+                    modo=modo_atual(), lp_min=LP_MIN, dos_etfs=_ler_json(FICH_ACOES_ETF, []))
+        wb = construir(linhas, texto, etfs, criterios, acrescentados, estado)
+        OCULTOS.clear()
+        guardar_e_abrir(wb)                     # abre o livro e repõe os filtros (OCULTOS = as linhas que escondem)
+        gerar_html(linhas, etfs, texto if isinstance(texto, str) else texto[0] if so == "acoes" else texto[1])
+        qual = {"acoes": f"{len(linhas)} ações ({n_alvo} com preço-alvo); ETFs como estavam",
+                "etfs": f"{len(etfs)} ETFs; ações como estavam"}.get(so, f"{len(linhas)} ações ({n_alvo} com preço-alvo) e {len(etfs)} ETFs")
+        print(f"\nPainel atualizado: {qual}.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+        registo("fim: ok")
+    except SystemExit as e:
+        if e.code not in (None, 0):
+            registo(f"parou: {e.code}")
+            print(e.code)
+            if "--servidor" in sys.argv:
+                sys.exit(1)
+            input("\nCarrega em Enter para fechar...")
+        else:
+            registo("fim: ok")
+    except Exception:
+        registo("ERRO: " + traceback.format_exc().strip().replace("\n", " | "))
+        traceback.print_exc()
+        if "--servidor" in sys.argv:
+            sys.exit(1)
+        input("\nOcorreu um erro (acima). Carrega em Enter para fechar...")
