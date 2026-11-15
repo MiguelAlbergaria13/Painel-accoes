@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V019", "15/11/2026"
+VERSAO, DATA_VERSAO = "V020", "15/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -564,9 +564,9 @@ def carteira(d):
     fx = 1.0 if txt(d.get("moeda")) == "EUR" else (d.get("fx_alt") if txt(d.get("moeda_alt")) == "EUR" else None)
     if not isinstance(fx, (int, float)):
         return
-    d["valor_eur"] = round(q * p * fx, 2)
+    d["valor_eur"] = q * p * fx                # todas as casas decimais (a folha mostra 2)
     if pc:
-        d["lp_eur"] = round(q * (p - pc) * fx, 2)
+        d["lp_eur"] = q * (p - pc) * fx
         d["lp_pct"] = p / pc - 1
 
 
@@ -3174,9 +3174,16 @@ def repor_filtros(filtros, quadro=None, espera=45):
         time.sleep(3)
         for f in (_ops_pywin32, _ops_powershell):
             try:
-                ops_q = [{"op": "quadro", "folhas": [1, 2], "texto": quadro, "ancora": f"{get_column_letter(COL['sinal'])}{L0 + 1}",
-                          "largura": 600, "altura": 62}] if quadro else []
-                r = f(livro, [{"op": "aplicar_filtros", "lista": filtros or []}, op_ocultos(1), op_ocultos(2)] + ops_q, True)
+                r = f(livro, [{"op": "aplicar_filtros", "lista": filtros or []}, op_ocultos(1), op_ocultos(2)], True)
+                if r is not None and quadro:
+                    try:
+                        f(livro, [{"op": "quadro", "folhas": [1, 2], "texto": quadro,
+                                   "ancora": f"{get_column_letter(COL['nome'] + 2)}{L0 + 1}", "largura": 520, "altura": 66}],
+                          True)
+                        print("Quadro da carteira mostrado (fecha-se no x vermelho).")
+                    except Exception as e:
+                        print("Aviso: não consegui mostrar o quadro da carteira:", e)
+                    quadro = None
                 if r is not None:
                     OCULTOS.clear()
                     OCULTOS.update(txt(t).upper() for t in (r[1] or []) + (r[2] or []))
@@ -3830,6 +3837,7 @@ main{padding:8px 10px 40px}
 <option value="nt">Nota global</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
 </header>
 <div id="glob" style="display:none"></div>
+<div id="qd" style="display:none;position:fixed;top:70px;left:8px;right:8px;z-index:20;background:#fffbe6;color:#222;border:1px solid #c9b458;border-radius:12px;padding:10px 34px 10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:13px;line-height:1.5"><button id="qdx" style="position:absolute;top:6px;right:6px;width:24px;height:24px;border:0;border-radius:50%;background:#d93025;color:#fff;font-weight:700">✕</button><div id="qdt"></div></div>
 <main id="lst"></main>
 <script>
 const D=__DATA__;
@@ -3847,6 +3855,13 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.length)return;
   const c=t.reduce((s,d)=>s+d.ce,0),v=t.reduce((s,d)=>s+d.vd,0),l=v-c,cor=l>=0?'#1e8e3e':'#d93025';
   const g=document.getElementById('glob');g.style.display='block';
+  const sub=l=>{const t=l.filter(d=>d.ce!=null&&d.vd!=null);return [t.reduce((s,d)=>s+d.ce,0),t.reduce((s,d)=>s+d.vd,0)];};
+  const [ca,va]=sub(D.a),[ce,ve]=sub(D.e),lin=(n,cc,vv,q)=>`<b>${n}:</b> compra ${eur(cc)}${q?` (${num(cc/c*100,0)}%/carteira)`:''} / atual ${eur(vv)} <b style="color:${vv>=cc?'#1e8e3e':'#d93025'}">(${pct2(cc?vv/cc-1:0)})</b>`;
+  document.getElementById('qdt').innerHTML=[lin('Ações',ca,va,1),lin('ETFs',ce,ve,1),lin('Total',c,v,0)].join('<br>');
+  let vis=false;try{vis=sessionStorage.getItem('qd')===D.v;}catch(e){}
+  if(!vis){document.getElementById('qd').style.display='block';}
+  document.getElementById('qdx').onclick=()=>{document.getElementById('qd').style.display='none';try{sessionStorage.setItem('qd',D.v);}catch(e){}};
+  g.onclick=()=>{document.getElementById('qd').style.display='block';};
   g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
@@ -4199,7 +4214,7 @@ def pagina_html(linhas, etfs, texto):
                 "p": num(d.get("preco")), "nt": num(d.get("nota")), "dc": txt(d.get("decisao")), "pt": num(d.get("pont")),
                 "x": e_detido(d.get("det")), "vd": valor_detido(d), "qn": num(d.get("qtd")) or qtd_detida(d.get("det")),
                 "pc": num(d.get("pcompra")), "le": num(d.get("lp_eur")), "lpp": num(d.get("lp_pct")),
-                "ce": (round(d["valor_eur"] - d["lp_eur"], 2) if isinstance(d.get("valor_eur"), (int, float))
+                "ce": ((d["valor_eur"] - d["lp_eur"]) if isinstance(d.get("valor_eur"), (int, float))
                        and isinstance(d.get("lp_eur"), (int, float)) else None),
                 "ds": 1 if d.get("desat") == 1 else 0,
                 "tm": num(d.get("teto")), "tmp": num(d.get("teto_pct")),
@@ -5239,7 +5254,7 @@ def atualizar_tudo(so=None, servidor=None):
                 aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
             return linhas, etfs, texto
         global QUADRO
-        QUADRO = texto_quadro(totais_carteira(linhas, etfs)) if so is None else None
+        QUADRO = texto_quadro(totais_carteira(linhas, etfs))
         assin = {k for ls in estado.get("linhas_ant", {}).values() for d in ls if txt(d.get("sel"))
                  for k in (txt(d.get("nome")), txt(d.get("ticker")).upper())}
         SYNC.update(universo=sorted(estado.get("universo") or []), assinalados=sorted(assin))
