@@ -370,11 +370,11 @@ COL = {k: j for j, (k, *_) in enumerate(COLS, start=1)}   # chave -> nº da colu
 CAB_ETF = {"nota": "Nota global (75% pontuação + 25% ações do ETF)"}
 CAB_RANK = [h for _, h, *_ in COLS]
 CAB_ETFS = [CAB_ETF.get(k, h) for k, h, *_ in COLS]
-SO_ETF = ("etf_acoes", "etf_desc", "etf_comp")      # colunas só dos ETFs (escondidas na folha Ranking)
+SO_ETF = ("etf_acoes", "etf_desc", "etf_comp")      # colunas só dos ETFs (escondidas na folha Ações)
 
 
 def cab_ok(cab):
-    """O cabeçalho lido do Excel é o desta versão (folha Ranking ou ETFs)?"""
+    """O cabeçalho lido do Excel é o desta versão (folha Ações ou ETFs)?"""
     return list(cab) in (CAB_RANK, CAB_ETFS)
 L0 = 6    # linha do cabeçalho da tabela (linhas 3-4: botões e Ordenar por)
 L0_ANTIGO = 11   # versões anteriores (com a secção ▶ GERAR): para aproveitar o "Ordenar por" ao atualizar
@@ -520,25 +520,31 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V016", "15/11/2026"
+VERSAO, DATA_VERSAO = "V019", "15/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
 def marcar_versao(ws):
-    """Versão bem visível no canto superior esquerdo (A1:B1, a cor); o título passa para C1."""
+    """Versão bem visível no canto superior esquerdo (a cor), juntando as primeiras colunas que forem precisas para
+    caber (sem as alargar); o título passa para a coluna a seguir."""
     from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
     tit = ws["A1"].value
+    j, soma = 1, 0.0
+    while True:                                # colunas até somarem ~16 de largura (máx. 6 colunas)
+        soma += ws.column_dimensions[get_column_letter(j)].width or 8.43
+        if soma >= 16 or j >= 6:
+            break
+        j += 1
     if tit and tit != TXT_VERSAO:
-        ws["C1"] = tit
-        ws["C1"].font = Font(size=14, bold=True)
-    ws.merge_cells("A1:B1")
+        ws.cell(1, j + 1, tit).font = Font(size=14, bold=True)
+    if j > 1:
+        ws.merge_cells(f"A1:{get_column_letter(j)}1")
     c = ws["A1"]
     c.value = TXT_VERSAO
-    c.font = Font(size=12, bold=True, color="FFFFFF")
+    c.font = Font(size=11, bold=True, color="FFFFFF")
     c.fill = PatternFill("solid", fgColor="7030A0")
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    if (ws.column_dimensions["A"].width or 8) + (ws.column_dimensions["B"].width or 8) < 18:
-        ws.column_dimensions["B"].width = 18 - (ws.column_dimensions["A"].width or 8)
+    c.alignment = Alignment(horizontal="center", vertical="center", shrink_to_fit=True)
     ws.row_dimensions[1].height = 22
 
 
@@ -624,12 +630,12 @@ def folha_carteira(wb, linhas, etfs):
     for i, (n, t, c, a, l) in enumerate(dados, 4):
         for j, v in enumerate([n, t, c, a, l, (a / c - 1) if c else None, min(c, a), max(l, 0), max(-l, 0)], 1):
             cel = ws.cell(i, j, v)
-            cel.number_format = "+0.0%;-0.0%;0.0%" if j == 6 else ('"€"* #,##0.00' if j >= 3 else "General")
+            cel.number_format = "+0.00%;-0.00%;0.00%" if j == 6 else ('"€"* #,##0.00' if j >= 3 else "General")
         ws.cell(i, 5).font = ws.cell(i, 6).font = Font(bold=True, color="00A050" if l >= 0 else "C00000")
     for col, w in zip("ABCDEFGHI", (34, 8, 13, 13, 13, 10, 11, 11, 11)):
         ws.column_dimensions[col].width = w
     if not dados:
-        ws["A5"] = "Escreve o nº de ações e o preço médio de compra nas folhas Ranking / ETFs para ver a carteira."
+        ws["A5"] = "Escreve o nº de ações e o preço médio de compra nas folhas Ações / ETFs para ver a carteira."
         return
     n = len(dados)
     # totais ações vs ETFs
@@ -715,7 +721,7 @@ def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), est
         aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
         carteira(d)
     wb = Workbook()
-    folha(wb.active, "Ranking", "Painel de ações: nota global (sinal das médias, valor justo e analistas + qualidade e saúde financeira)",
+    folha(wb.active, "Ações", "Painel de ações: nota global (sinal das médias, valor justo e analistas + qualidade e saúde financeira)",
           sorted(linhas, key=chave_ordem(criterios[1])), at_a, True, criterios[1], 1, estado)
     folha(wb.create_sheet(), "ETFs", "Painel de ETFs: nota global (sinal das médias + nota das ações que os compõem)",
           sorted(etfs, key=chave_ordem(criterios[2])), at_e, False, criterios[2], 2, estado)
@@ -798,7 +804,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 "atualização. Por omissão ordena pela NOTA GLOBAL (coluna K): " + (
                     "75% pontuação + 12,5% qualidade + 12,5% saúde; no máx. 2,5 com saúde em alerta ou longo prazo fraco. "
                     if ranking else "75% pontuação + 25% média das notas globais das ações do ETF (pesadas pelo peso de "
-                    "cada uma; as que faltam na folha Ranking são lá acrescentadas); no máx. 2,5 com longo prazo fraco. ")
+                    "cada uma; as que faltam na folha Ações são lá acrescentadas); no máx. 2,5 com longo prazo fraco. ")
                 + ("" if ranking else "Os ETFs não têm preço-alvo nem valor justo (esses critérios deixam-nos no fim). ")
                 + f"Se os botões não responderem, corre uma vez o {os.path.basename(BAT)} (isso ativa-os neste PC).")
     ws["A2"].font = Font(italic=True, size=9, color="595959")
@@ -902,7 +908,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
             elif fmt == "alt":
                 c.number_format = '"("#,##0.00")"'
             elif fmt == "pct":
-                c.number_format = "+0.0%;-0.0%;0.0%"
+                c.number_format = "+0.00%;-0.00%;0.00%" if k == "lp_pct" else "+0.0%;-0.0%;0.0%"
             elif fmt == "num1":
                 c.number_format = "#,##0.0"
             elif fmt == "qtd":
@@ -1043,7 +1049,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws.conditional_formatting.add(tudo, FormulaRule(                   # vermelho claro / rosa claro em vez dos cinzentos
         formula=[f'${cs}{L0+1}=1'], fill=PatternFill("solid", bgColor="FCE4EC"), stopIfTrue=True))
     ws.conditional_formatting.add(tudo, FormulaRule(formula=[par], fill=PatternFill("solid", bgColor="D9D9D9")))
-    # colunas sem uso nesta folha: na Ranking, as dos ETFs; na ETFs, as que nenhum ETF preenche
+    # colunas sem uso nesta folha: na Ações, as dos ETFs; na ETFs, as que nenhum ETF preenche
     for j, (k, *_) in enumerate(COLS, start=1):
         vazia = all(not txt(d.get(k)) for d in linhas)
         if k in OCULTAS or (ranking and k in SO_ETF) or (not ranking and vazia and k not in ("sel", "det", "nome", "ticker", "preco", "qtd", "pcompra",
@@ -1064,7 +1070,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                      "Distância ao máx. = preço atual / máximo do período − 1. "
                      "NOTA GLOBAL (coluna K, de ordenação). Ações: 75% pontuação + 12,5% qualidade + 12,5% saúde. ETFs: 75% pontuação "
                      "+ 25% nota ponderada das ações do ETF (as maiores posições que o Yahoo dá, até 10, cada uma com a sua nota "
-                     "global da folha Ranking, pesada pelo peso no ETF; sem composição no Yahoo usa-se um ETF americano do mesmo "
+                     "global da folha Ações, pesada pelo peso no ETF; sem composição no Yahoo usa-se um ETF americano do mesmo "
                      "índice, indicado na composição; obrigações e ouro: só a pontuação). Se a qualidade ou a saúde "
                      "faltarem (ETFs, bancos, sem dados), conta a pontuação no lugar delas; com a saúde em ALERTA, a nota global não "
                      "passa de 2,5, e o mesmo com o longo prazo fraco. A pontuação (e a decisão) continua a ser só o sinal testado: médias, valor justo e analistas. "
@@ -2275,7 +2281,7 @@ def composicao(yf, tk, ticker_orig, ticker, nome, info):
 
 
 def _chaves_acao(d):
-    """Símbolos pelos quais uma ação da folha Ranking pode aparecer na composição de um ETF."""
+    """Símbolos pelos quais uma ação da folha Ações pode aparecer na composição de um ETF."""
     ch = {txt(d.get("codigo")).upper(), txt(d.get("ticker")).upper()}
     m = re.search(r"principal: .* (\S+)$", txt(d.get("bolsa")))
     if m:
@@ -2304,7 +2310,7 @@ def _nome_chave(n):
 
 
 def acoes_em_falta(linhas, etfs, comp):
-    """Ações das composições dos ETFs que não estão na folha Ranking: [(nome, código, ticker, bolsa), ...]."""
+    """Ações das composições dos ETFs que não estão na folha Ações: [(nome, código, ticker, bolsa), ...]."""
     indice = {}
     for d in linhas:
         for c in _chaves_acao(d) | {_nome_chave(d.get("nome"))} - {None}:
@@ -2320,7 +2326,7 @@ def acoes_em_falta(linhas, etfs, comp):
 
 
 def ponderar_etfs(linhas, etfs, comp):
-    """Nota ponderada das ações de cada ETF (notas globais da folha Ranking, pesadas pelo peso no ETF), descrição e
+    """Nota ponderada das ações de cada ETF (notas globais da folha Ações, pesadas pelo peso no ETF), descrição e
     composição; recalcula a nota global dos ETFs."""
     indice = {}
     for d in linhas:
@@ -2584,7 +2590,7 @@ def valores_eur(linhas):
 
 
 def incluir_novos(novos):
-    """Depois do ➕ ACRESCENTAR: vai buscar já os dados dos títulos novos e põe-nos nas folhas Ranking / ETFs (as outras
+    """Depois do ➕ ACRESCENTAR: vai buscar já os dados dos títulos novos e põe-nos nas folhas Ações / ETFs (as outras
     linhas ficam como estão, com os valores do último ▶ ATUALIZAR / ↻ PREÇOS)."""
     global REF, LP_MIN
     _, _, est0 = ler_estado()
@@ -3351,7 +3357,7 @@ MAX_LINHAS = 400
 
 
 def ordenar(idx):
-    """Reordena a folha idx (1 = Ranking, 2 = ETFs) pelo critério escolhido em D3, sem descarregar nada."""
+    """Reordena a folha idx (1 = Ações, 2 = ETFs) pelo critério escolhido em D3, sem descarregar nada."""
     ex = Excel(FICHEIRO)
     ultima = get_column_letter(len(COLS))
     r = ex.ops([{"op": "ler", "folha": idx, "rng": C_ORD},
@@ -3685,7 +3691,7 @@ def recalcular(d, preco, hora, ref):
     carteira(d)
 
 def atualizar_precos():
-    """↻ PREÇOS: preços de agora (com pré-abertura e pós-fecho) e as contas que dependem deles, nas folhas Ranking e ETFs,
+    """↻ PREÇOS: preços de agora (com pré-abertura e pós-fecho) e as contas que dependem deles, nas folhas Ações e ETFs,
     sem descarregar o resto; depois volta a ordenar cada folha pelo critério escolhido (os x acompanham as linhas)."""
     ex = Excel(FICHEIRO)
     ultima = get_column_letter(len(COLS))
@@ -3700,7 +3706,7 @@ def atualizar_precos():
                          f"em {C_REF} e carrega em ▶ ATUALIZAR.")
     for idx in (1, 2):
         if passada[idx]:
-            print(f"A folha {'Ranking' if idx == 1 else 'ETFs'} está numa data passada: os preços dela ficam como estão.")
+            print(f"A folha {'Ações' if idx == 1 else 'ETFs'} está numa data passada: os preços dela ficam como estão.")
     r = ex.ops([op for idx in (1, 2) for op in (
         {"op": "ler", "folha": idx, "rng": C_ORD},
         {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"})])
@@ -3841,7 +3847,7 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.length)return;
   const c=t.reduce((s,d)=>s+d.ce,0),v=t.reduce((s,d)=>s+d.vd,0),l=v-c,cor=l>=0?'#1e8e3e':'#d93025';
   const g=document.getElementById('glob');g.style.display='block';
-  g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct(c?v/c-1:0)})</b>`;},0);
+  g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
@@ -3871,6 +3877,7 @@ let aba='A';
 const cor=v=>v==null?'#d0d3d8':v>=4.5?'#63BE7B':v>=3.75?'#A9D18E':v>=2.75?'#E2EFDA':v>=2.25?'#F4B183':v>=1.5?'#FFEB9C':'#F8696B';
 const num=(v,c)=>v==null?'–':v.toLocaleString('pt-PT',{minimumFractionDigits:c,maximumFractionDigits:c});
 const pct=v=>v==null?'':(v>0?'+':'')+num(v*100,1)+'%';
+const pct2=v=>v==null?'':(v>0?'+':'')+num(v*100,2)+'%';
 const pr=v=>v==null?'–':num(v,v>=1000?0:2);
 const eur=v=>'€ '+num(v,2);
 const esc=s=>(s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -3881,7 +3888,7 @@ function cartao(d){
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
   <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.qn!=null?`<div class="pos"><div>Nº<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
-  <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct(d.lpp)})</span>`:''}</b></div>
+  <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
   <div>Máxima (ordem)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
@@ -3905,7 +3912,7 @@ function mostrar(){
       o==='vd'?(b.vd??-1)-(a.vd??-1):(b.nt??-9)-(a.nt??-9));};
   const tot=l=>{const v=l.filter(d=>d.vd!=null);if(!v.length)return '';
     const lp=l.filter(d=>d.le!=null).reduce((s,d)=>s+d.le,0), ce=l.filter(d=>d.ce!=null).reduce((s,d)=>s+d.ce,0);
-    return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}${ce?' ('+pct(lp/ce)+')':''}</span>`:'');};
+    return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}${ce?' ('+pct2(lp/ce)+')':''}</span>`:'');};
   const el=document.getElementById('lst');
   let h='';
   if(aba==='X'){
@@ -4391,7 +4398,7 @@ def folha_procurar(wb, pf):
                  + "A mesma empresa / fundo em várias bolsas aparece uma só vez, na bolsa com mais negócio (as outras "
                  "ficam na última coluna). Vêm marcados com x os que ainda não estão no painel; os que já lá estão não "
                  "têm x e não se copiam. ➕ ACRESCENTAR MARCADOS: junta os que têm x à folha Acrescentados e às folhas "
-                 "Ranking / ETFs (com os dados todos). ↺ LISTA BASE: mostra os títulos da lista base do script que não estão "
+                 "Ações / ETFs (com os dados todos). ↺ LISTA BASE: mostra os títulos da lista base do script que não estão "
                  "nas folhas (nem nessa nem noutra bolsa / moeda), marcados com x, para os voltares a acrescentar.")
     ws["B10"].font = Font(italic=True, size=9, color="595959")
     ws["B10"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -4446,7 +4453,7 @@ def nome_norm(nome):
 
 
 def _nas_folhas(ex):
-    """Tickers, nomes e códigos das linhas das folhas Ranking / ETFs -> nome da folha (None se não der para ler)."""
+    """Tickers, nomes e códigos das linhas das folhas Ações / ETFs -> nome da folha (None se não der para ler)."""
     ultima = get_column_letter(len(COLS))
     try:
         r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
@@ -4459,7 +4466,7 @@ def _nas_folhas(ex):
             return None
         jn, jt = cab.index("Empresa / ETF"), cab.index("Ticker Yahoo")
         jc = cab.index("Código") if "Código" in cab else None
-        onde = "Ranking" if idx == 1 else "ETFs"
+        onde = "Ações" if idx == 1 else "ETFs"
         for v in tab[1:]:
             if txt(v[jt]):
                 ja.setdefault(txt(v[jt]).upper(), onde)
@@ -4472,12 +4479,12 @@ def _nas_folhas(ex):
 
 
 def _ja_no_painel(ex):
-    """Tickers e nomes já no painel (linhas das folhas Ranking / ETFs + folha Acrescentados) -> onde estão."""
+    """Tickers e nomes já no painel (linhas das folhas Ações / ETFs + folha Acrescentados) -> onde estão."""
     nf = _nas_folhas(ex)
     if nf is None:                         # não se leram as folhas: as listas do script
-        ja = {t.upper(): "Ranking" for _, _, t, _ in ACOES}
+        ja = {t.upper(): "Ações" for _, _, t, _ in ACOES}
         ja.update({t.upper(): "ETFs" for _, _, t, _ in ETFS})
-        nomes = {nome_norm(n): "Ranking" for n, _, _, _ in ACOES}
+        nomes = {nome_norm(n): "Ações" for n, _, _, _ in ACOES}
         nomes.update({nome_norm(n): "ETFs" for n, _, _, _ in ETFS})
     else:
         ja, nomes, _ = nf
@@ -4847,7 +4854,7 @@ def da_lista_base(pf):
     etf = pf == FOLHA_PROC_ETF
     nf = _nas_folhas(ex)
     if nf is None:
-        raise SystemExit("Não consegui ler as folhas Ranking / ETFs: carrega primeiro em ▶ ATUALIZAR.")
+        raise SystemExit("Não consegui ler as folhas Ações / ETFs: carrega primeiro em ▶ ATUALIZAR.")
     ja, nomes, cods = nf
     try:                                   # a mesma ação noutra bolsa (outra moeda) também conta
         with open(FICH_EUR, encoding="utf-8") as f:
@@ -4866,7 +4873,7 @@ def da_lista_base(pf):
         linhas.append(["x", n, "ETF" if etf else "Ação", c, t, b, None, None,
                        "Acrescentados (não está nas folhas)" if t.upper() in acr else None, None])
     _escrever_resultados(ex, pf, linhas, f"{datetime.now():%d/%m/%Y %H:%M} · lista base: {len(linhas)} "
-                         f"{'ETF(s)' if etf else 'ação(ões)'} que não estão na folha {'ETFs' if etf else 'Ranking'} "
+                         f"{'ETF(s)' if etf else 'ação(ões)'} que não estão na folha {'ETFs' if etf else 'Ações'} "
                          "(nem noutra bolsa / moeda), marcados com x. Tira os x que não quiseres e carrega em "
                          "➕ ACRESCENTAR MARCADOS." if linhas else
                          f"{datetime.now():%d/%m/%Y %H:%M} · lista base: estão todos na folha (nesta ou noutra moeda).")
@@ -4899,7 +4906,7 @@ def acrescentar_marcados(pf):
     linhas = [list(a) for a in atuais][:MAX_LINHAS]
     linhas += [[None] * 5] * (MAX_LINHAS - len(linhas))
     msg = (f"{datetime.now():%d/%m/%Y %H:%M} · {novos} título(s) acrescentado(s) à folha Acrescentados e às folhas "
-           "Ranking / ETFs.")
+           "Ações / ETFs.")
     res = [[None if v in ("", None) else v for v in r] for r in res]
     guardar_copia_acr(atuais)
     folha_a = FOLHA_ACR if [txt(v) for v in ex.ops([{"op": "ler", "folha": FOLHA_ACR, "rng": f"A{AC_L0}:E{AC_L0}"}])[0][0]] == CAB_A else 4
@@ -5051,7 +5058,7 @@ def main():
         guardar_modo(m)
         print(f"Bolsa: {MODOS[m]}. A atualizar o painel...")
         atualizar_tudo()
-    elif re.search(r"atualizar/+acoes", arg):   # ▶ ATUALIZAR AÇÕES (folha Ranking)
+    elif re.search(r"atualizar/+acoes", arg):   # ▶ ATUALIZAR AÇÕES (folha Ações)
         atualizar_tudo("acoes")
     elif re.search(r"atualizar/+etfs", arg):    # ▶ ATUALIZAR ETFs (folha ETFs)
         atualizar_tudo("etfs")
@@ -5060,7 +5067,7 @@ def main():
 
 
 def ler_folha_atual(idx):
-    """Linhas e texto de atualização (K3) da folha idx (1 = Ranking, 2 = ETFs) do painel atual, para ficarem como estão
+    """Linhas e texto de atualização (K3) da folha idx (1 = Ações, 2 = ETFs) do painel atual, para ficarem como estão
     quando só se atualiza a outra folha. None se não der para ler (ou as colunas forem de outra versão)."""
     if not os.path.exists(FICHEIRO):
         return None
@@ -5198,12 +5205,12 @@ def atualizar_tudo(so=None, servidor=None):
             if esc_e is not None:
                 pontuar_etfs(etfs)
         comp = _ler_json(FICH_COMP, {})
-        if so != "acoes":                       # composições novas; ações que faltam na folha Ranking -> acrescentam-se
+        if so != "acoes":                       # composições novas; ações que faltam na folha Ações -> acrescentam-se
             comp.update(COMPOSICAO)
             _gravar_json(FICH_COMP, comp)
             falta = acoes_em_falta(linhas, etfs, comp)
             if falta:
-                print(f"\n{len(falta)} ação(ões) das composições dos ETFs não estão na folha Ranking: a acrescentar...")
+                print(f"\n{len(falta)} ação(ões) das composições dos ETFs não estão na folha Ações: a acrescentar...")
                 novas, _ = recolher((), "acoes", apenas=falta)
                 ja_tk = {txt(d.get("ticker")).upper() for d in linhas}
                 novas = [d for d in novas if d.get("preco") and d.get("pont") is not None
