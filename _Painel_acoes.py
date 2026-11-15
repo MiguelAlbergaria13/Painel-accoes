@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V020", "15/11/2026"
+VERSAO, DATA_VERSAO = "V022", "15/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -614,7 +614,7 @@ def folha_carteira(wb, linhas, etfs):
     ws["A1"] = "Carteira: valor de compra, valor atual e lucro / prejuízo (em euros, ao câmbio de hoje)"
     ws["A1"].font = Font(size=14, bold=True)
     cab = ["Título", "Tipo", "Compra (€)", "Atual (€)", "Lucro / prejuízo (€)", "Lucro / prejuízo (%)",
-           "Base (gráfico)", "Lucro (gráfico)", "Prejuízo (gráfico)"]
+           "Valor de compra (mantido)", "Lucro", "Prejuízo"]
     for j, h in enumerate(cab, 1):
         c = ws.cell(3, j, h)
         c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3B57")
@@ -677,13 +677,161 @@ def folha_carteira(wb, linhas, etfs):
     for sr, cor in zip(b.series, ("A6A6A6", "00A050", "C00000")):
         sr.graphicalProperties.solidFill = cor
         sr.graphicalProperties.line.solidFill = cor
-    b.y_axis.title = "€"
-    b.y_axis.numFmt = '#,##0'
+    b.y_axis.title = "Valor (€)"
+    b.x_axis.title = "Título"
+    b.y_axis.numFmt = '#,##0" €"'
+    b.x_axis.delete = b.y_axis.delete = False           # sem isto o Excel recente esconde os eixos
+    b.x_axis.tickLblPos = b.y_axis.tickLblPos = "low"
+    from openpyxl.chart.axis import ChartLines
+    b.y_axis.majorGridlines = ChartLines()
+    b.legend.position = "b"
     b.width, b.height = max(18, min(40, 1.4 * n)), 11
     ws.add_chart(b, "K45")
 
 
-QUADRO = None         # texto do quadro flutuante da carteira (só depois de uma atualização de tudo)
+QUADRO = None         # dados da janela da posição (depois de cada ▶ ATUALIZAR)
+FICH_POS = os.path.join(PASTA, "_Painel_acoes_posicao.json")
+FICH_JANELA = os.path.join(PASTA, "_Painel_acoes_janela.json")     # tamanho e posição da janela
+
+
+def dados_posicao(linhas, etfs):
+    tot = totais_carteira(linhas, etfs)
+    tit = []
+    for tipo, ls in (("Ação", linhas), ("ETF", etfs)):
+        for d in ls:
+            if isinstance(d.get("valor_eur"), (int, float)) and isinstance(d.get("lp_eur"), (int, float)):
+                q = d.get("qtd") if isinstance(d.get("qtd"), (int, float)) else qtd_detida(d.get("det"))
+                tit.append([txt(d.get("nome")), tipo, q, d["valor_eur"] - d["lp_eur"], d["valor_eur"]])
+    tit.sort(key=lambda x: -x[3])
+    return {"quando": f"{datetime.now():%d/%m/%Y %H:%M}", "acoes": tot["acoes"], "etfs": tot["etfs"],
+            "total": tot["total"], "titulos": tit}
+
+
+def gravar_posicao(dp):
+    try:
+        with open(FICH_POS, "w", encoding="utf-8") as f:
+            json.dump(dp, f, ensure_ascii=False, default=_json_num)
+    except Exception:
+        pass
+
+
+def abrir_janela_posicao():
+    """Abre a janela da posição num processo à parte (o Excel e a consola ficam livres)."""
+    if os.name != "nt":
+        return
+    import subprocess
+    exe = sys.executable
+    w = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    try:
+        subprocess.Popen([w if os.path.exists(w) else exe, os.path.abspath(__file__), "--janela"],
+                         creationflags=0x00000008 | 0x00000200, close_fds=True)   # DETACHED_PROCESS | NEW_GROUP
+    except Exception as e:
+        print("   aviso: não consegui abrir a janela da posição:", e)
+
+
+def janela_posicao():
+    """Janela cinzenta do Windows, redimensionável, com o resumo da carteira e a lista dos títulos. Guarda o tamanho e
+    a posição ao fechar (o ▣ VER POSIÇÃO volta a abri-la igual)."""
+    import tkinter as tk
+    from tkinter import ttk
+    try:
+        with open(FICH_POS, encoding="utf-8") as f:
+            dp = json.load(f)
+    except Exception:
+        dp = None
+    raiz = tk.Tk()
+    raiz.title("Posição da carteira")
+    try:
+        with open(FICH_JANELA, encoding="utf-8") as f:
+            raiz.geometry(json.load(f)["geo"])
+    except Exception:
+        raiz.geometry("760x460+120+120")
+    raiz.minsize(480, 260)
+    st = ttk.Style(raiz)
+    try:
+        st.theme_use("vista" if "vista" in st.theme_names() else "clam")
+    except Exception:
+        pass
+    verde, verm = "#1e7e34", "#c00000"
+    cab = ttk.Frame(raiz, padding=(12, 10, 12, 4))
+    cab.pack(fill="x")
+    ttk.Label(cab, text="Posição da carteira", font=("Segoe UI", 13, "bold")).pack(side="left")
+    ttk.Label(cab, text=("atualizado em " + dp["quando"]) if dp else "", foreground="#595959").pack(side="right")
+    if not dp or not dp["total"][0]:
+        ttk.Label(raiz, text="Sem títulos com nº de ações e preço médio de compra (colunas C e D das folhas Ações / ETFs).",
+                  padding=12).pack(fill="both", expand=True)
+    else:
+        res = ttk.Frame(raiz, padding=(12, 4))
+        res.pack(fill="x")
+        ct = dp["total"][0]
+        cols = ("", "Valor de compra", "% da carteira", "Valor atual", "Lucro / prejuízo", "%")
+        for j, h in enumerate(cols):
+            ttk.Label(res, text=h, font=("Segoe UI", 9, "bold"), anchor="e" if j else "w").grid(row=0, column=j, sticky="ew", padx=6)
+            res.columnconfigure(j, weight=1)
+        for i, (nome, k) in enumerate((("Ações", "acoes"), ("ETFs", "etfs"), ("Total", "total")), 1):
+            c, a = dp[k]
+            l = a - c
+            cor = verde if l >= 0 else verm
+            negr = ("Segoe UI", 10, "bold") if k == "total" else ("Segoe UI", 10)
+            vals = (nome, fmt_eur(c), f"{c / ct:.1%}".replace(".", ",") if k != "total" else "100%", fmt_eur(a),
+                    fmt_eur(l, True), (f"{l / c:+.2%}".replace(".", ",") if c else ""))
+            for j, v in enumerate(vals):
+                ttk.Label(res, text=v, font=negr, anchor="e" if j else "w",
+                          foreground=cor if j >= 4 else None).grid(row=i, column=j, sticky="ew", padx=6, pady=1)
+        ttk.Separator(raiz).pack(fill="x", padx=12, pady=6)
+        fr = ttk.Frame(raiz, padding=(12, 0))
+        fr.pack(fill="both", expand=True)
+        cs = ("tit", "tipo", "qtd", "compra", "atual", "lp", "pct")
+        tv = ttk.Treeview(fr, columns=cs, show="headings", height=8)
+        for cid, h, w, an in zip(cs, ("Título", "Tipo", "Nº", "Compra (€)", "Atual (€)", "Lucro / prejuízo (€)", "%"),
+                                 (220, 50, 60, 100, 100, 120, 70), ("w", "center", "e", "e", "e", "e", "e")):
+            tv.heading(cid, text=h)
+            tv.column(cid, width=w, anchor=an, stretch=True)
+        tv.tag_configure("g", foreground=verde)
+        tv.tag_configure("p", foreground=verm)
+        for n, tp, q, c, a in dp["titulos"]:
+            l = a - c
+            tv.insert("", "end", tags=("g" if l >= 0 else "p",),
+                      values=(n, tp, f"{q:,.2f}".replace(",", " ").replace(".", ",") if isinstance(q, (int, float)) else "",
+                              fmt_eur(c), fmt_eur(a), fmt_eur(l, True), f"{l / c:+.2%}".replace(".", ",") if c else ""))
+        sb = ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+    def fechar():
+        try:
+            with open(FICH_JANELA, "w", encoding="utf-8") as f:
+                json.dump({"geo": raiz.geometry()}, f)
+        except Exception:
+            pass
+        raiz.destroy()
+    rod = ttk.Frame(raiz, padding=10)
+    rod.pack(fill="x", side="bottom")
+    ttk.Button(rod, text="Fechar", command=fechar, width=12).pack(side="right")
+    raiz.protocol("WM_DELETE_WINDOW", fechar)
+    raiz.bind("<Escape>", lambda e: fechar())
+    raiz.attributes("-topmost", True)                   # por cima do Excel ao abrir...
+    raiz.after(1500, lambda: raiz.attributes("-topmost", False))   # ...mas depois como uma janela normal
+    raiz.mainloop()
+
+
+def ver_posicao():
+    """▣ VER POSIÇÃO: lê as folhas Ações e ETFs como estão (nº de ações e preços de agora) e abre a janela."""
+    try:
+        ex = Excel(FICHEIRO)
+        ultima = get_column_letter(len(COLS))
+        r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
+        chaves = [k for k, *_ in COLS]
+        ls = []
+        for tab in r:
+            if not cab_ok([txt(v) for v in tab[0]]):
+                raise ValueError("colunas")
+            ls.append([d for d in (linha_lida(chaves, v) for v in tab[1:]) if txt(d.get("ticker"))])
+        gravar_posicao(dados_posicao(*ls))
+    except Exception:
+        pass                                            # fica a última posição guardada
+    abrir_janela_posicao()
 
 
 def aplicar_compra(d, qtd, pcompra):
@@ -806,6 +954,8 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                     if ranking else "75% pontuação + 25% média das notas globais das ações do ETF (pesadas pelo peso de "
                     "cada uma; as que faltam na folha Ações são lá acrescentadas); no máx. 2,5 com longo prazo fraco. ")
                 + ("" if ranking else "Os ETFs não têm preço-alvo nem valor justo (esses critérios deixam-nos no fim). ")
+                + "LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. "
+                + "▣ VER POSIÇÃO: janela com o valor de compra, o valor atual e o lucro/prejuízo da carteira. "
                 + f"Se os botões não responderem, corre uma vez o {os.path.basename(BAT)} (isso ativa-os neste PC).")
     ws["A2"].font = Font(italic=True, size=9, color="595959")
     # linha 3: ▶ ATUALIZAR · o que atualizar · Ordenar por · ↕ ORDENAR · data
@@ -847,6 +997,12 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws[C_LPMIN].fill = PatternFill("solid", fgColor="FFF2CC")
     ws[C_LPMIN].border = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
     ws[C_LPMIN].alignment = Alignment(horizontal="center", vertical="center")
+    from openpyxl.comments import Comment
+    nota_lp = Comment("LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. ", "Painel")
+    nota_lp.width, nota_lp.height = 420, 230
+    ws[C_LPMIN].comment = nota_lp
+    ws.merge_cells("M4:N4")
+    botao(ws, "M4", "▣ VER POSIÇÃO", f"{PROTOCOLO}://posicao", "595959", "3A3A3A", 10)
     ws["H4"] = "Situação em:"
     ws["H4"].font = Font(bold=True, size=10)
     ws["H4"].alignment = Alignment(horizontal="right", vertical="center")
@@ -1153,7 +1309,9 @@ def guardar_e_abrir(wb):
             sys.exit(1)
     if os.name == "nt":
         os.startfile(FICHEIRO)
-        repor_filtros(filtros, QUADRO)
+        repor_filtros(filtros)
+        if QUADRO:
+            abrir_janela_posicao()
 
 
 def registar_botao():
@@ -1276,7 +1434,7 @@ def ler_lp_min(v):
         if isinstance(v, (int, float)):
             x = float(v)
         else:
-            x = float(txt(v).replace("%", "").replace(",", ".").strip())
+            x = float(txt(v).replace("%", "").replace(",", ".").replace("−", "-").strip())
         return x / 100 if abs(x) >= 1 else x
     except (TypeError, ValueError):
         return 0.03
@@ -4164,6 +4322,39 @@ def _enviar_github(cfg, nome, conteudo, ramo="main"):
         pass
 
 
+WORKFLOW_YML = 'name: painel\n\non:\n  schedule:\n    # hora UTC (= Lisboa no inverno; no verão é mais 1 hora em Lisboa)\n    - cron: \'30 7 * * 1-5\'            # completa antes da abertura europeia\n    - cron: \'0 14 * * 1-5\'            # completa antes da abertura americana\n    - cron: \'15 22 * * 1-5\'           # completa depois do fecho americano\n    - cron: \'5,20,35,50 8-21 * * 1-5\' # só preços, de 15 em 15 minutos\n  workflow_dispatch:\n    inputs:\n      tipo:\n        description: \'completa ou precos\'\n        required: false\n        default: \'precos\'\n\npermissions:\n  contents: write\n  pages: write\n\nconcurrency:\n  group: painel\n  cancel-in-progress: false\n\njobs:\n  painel:\n    runs-on: ubuntu-latest\n    timeout-minutes: 50\n    steps:\n      - uses: actions/checkout@v4\n\n      - name: Recuperar dados e caches da última atualização (ramo gh-pages)\n        run: |\n          if git fetch -q origin gh-pages 2>/dev/null; then\n            for f in dados.enc _Painel_acoes_bolsas.json _Painel_acoes_composicao_etfs.json _Painel_acoes_acoes_dos_etfs.json; do\n              git show "FETCH_HEAD:$f" > "$f" 2>/dev/null || rm -f "$f"\n            done\n          fi\n\n      - uses: actions/setup-python@v5\n        with:\n          python-version: \'3.12\'\n\n      - name: Instalar\n        run: pip install -q yfinance openpyxl cryptography pandas numpy\n\n      - name: Atualizar\n        env:\n          PAINEL_SENHA: ${{ secrets.PAINEL_SENHA }}\n        run: |\n          TIPO="${{ github.event.inputs.tipo }}"\n          if [ -z "$TIPO" ]; then\n            case "${{ github.event.schedule }}" in\n              "5,20,35,50 8-21 * * 1-5") TIPO=precos ;;\n              *) TIPO=completa ;;\n            esac\n          fi\n          python _Painel_acoes.py --servidor "$TIPO"\n\n      - name: Publicar no ramo gh-pages (sem histórico, para o repositório não crescer)\n        run: |\n          mkdir -p /tmp/pub\n          for f in index.html versao.txt dados.enc _Painel_acoes_bolsas.json _Painel_acoes_composicao_etfs.json _Painel_acoes_acoes_dos_etfs.json; do\n            [ -f "$f" ] && cp "$f" /tmp/pub/\n          done\n          touch /tmp/pub/.nojekyll\n          cd /tmp/pub\n          git init -q -b gh-pages\n          git config user.name "painel-bot"\n          git config user.email "painel-bot@users.noreply.github.com"\n          git add -A\n          git commit -q -m "painel $(date -u +\'%d/%m/%Y %H:%M\') UTC"\n          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages:gh-pages\n\n      - name: Pedir a publicação da página\n        run: |\n          curl -s -o /dev/null -w "pages build: %{http_code}\\n" -X POST \\\n            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \\\n            "https://api.github.com/repos/${{ github.repository }}/pages/builds"\n'
+
+
+def _existe_github(cfg, nome, ramo="main"):
+    import urllib.request, urllib.error
+    api = f"https://api.github.com/repos/{cfg.get('user', GH_USER)}/{cfg.get('repo', GH_REPO)}/contents/{nome}?ref={ramo}"
+    cab = {"Authorization": f"Bearer {cfg['token']}", "Accept": "application/vnd.github+json", "User-Agent": "painel-acoes"}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(api, headers=cab), timeout=30):
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+
+
+def _garantir_workflow(cfg):
+    """As atualizações automáticas e o botão ↻ da app precisam de .github/workflows/painel.yml no repositório."""
+    import urllib.error
+    nome = ".github/workflows/painel.yml"
+    try:
+        if _existe_github(cfg, nome):
+            return
+        _enviar_github(cfg, nome, WORKFLOW_YML)
+        print("   Atualizações automáticas instaladas no GitHub (.github/workflows/painel.yml).")
+    except urllib.error.HTTPError:
+        print("   AVISO: o repositório não tem .github/workflows/painel.yml, por isso as atualizações automáticas e o botão ↻ "
+              "da app não funcionam. O token não pode criá-lo (precisa da permissão Workflows). Cria-o à mão: no GitHub, "
+              "Add file > Create new file, nome .github/workflows/painel.yml, e cola o conteúdo de github\\painel.yml do zip.")
+    except Exception:
+        pass
+
+
 def publicar_github(html, versao=""):
     """Envia a página (cifrada) para o repositório; o GitHub Pages mostra-a em GH_URL ao fim de ~1 minuto. Depois de
     um ▶ ATUALIZAR envia também as definições (cifradas) e o script, para as atualizações automáticas no GitHub."""
@@ -4175,12 +4366,15 @@ def publicar_github(html, versao=""):
         pag = pagina_cifrada(html, cfg["senha"])
         _enviar_github(cfg, "index.html", pag, GH_RAMO_PAGINA)       # gh-pages (o das atualizações automáticas)
         _enviar_github(cfg, "versao.txt", versao, GH_RAMO_PAGINA)
+        _enviar_github(cfg, "index.html", pag)                       # também no main (se o Pages publicar o main)
+        _enviar_github(cfg, "versao.txt", versao)
         _enviar_github(cfg, "ocultos.enc", _cifrar(json.dumps(sorted(OCULTOS)), cfg["senha"]))
         if SYNC:
             defs = dict(SYNC, token_botao=cfg.get("token_botao"), enviado=f"{datetime.now():%d/%m/%Y %H:%M}")
             _enviar_github(cfg, "config.enc", _cifrar(json.dumps(defs, ensure_ascii=False, default=_json_num), cfg["senha"]))
             with open(os.path.abspath(__file__), encoding="utf-8") as f:
                 _enviar_github(cfg, "_Painel_acoes.py", f.read())
+            _garantir_workflow(cfg)
         print(f"Página publicada: {GH_URL}  (fica visível ao fim de 1-2 minutos)"
               + ("; definições enviadas para as atualizações automáticas" if SYNC else ""))
         registo("publicada no GitHub")
@@ -5034,6 +5228,9 @@ def atualizar_servidor(tipo):
 
 
 def main():
+    if "--janela" in sys.argv:               # janela da posição (processo à parte)
+        janela_posicao()
+        sys.exit(0)
     ficheiro_link_app()
     if "--servidor" in sys.argv:             # GitHub Actions: python _Painel_acoes.py --servidor completa|precos
         i = sys.argv.index("--servidor")
@@ -5051,7 +5248,9 @@ def main():
                                      for n, c, t, b in lista]
         construir(vazio(ACOES, "Ação"), "Ainda sem dados: carrega em ▶ ATUALIZAR", vazio(ETFS, "ETF")).save(FICHEIRO)
         print("modelo criado:", FICHEIRO)
-    elif "fechar_quadro" in arg:             # ✕ do quadro da carteira
+    elif "posicao" in arg:                   # ▣ VER POSIÇÃO
+        ver_posicao()
+    elif "fechar_quadro" in arg:             # ✕ do quadro da carteira (versões anteriores)
         Excel(FICHEIRO).ops([{"op": "fechar_quadro"}], guardar=True)
     elif "ordenar" in arg:                   # ↕ ORDENAR (painelacoes://ordenar/1 ou /2)
         ordenar(2 if re.search(r"ordenar/+2", arg) else 1)
@@ -5254,7 +5453,8 @@ def atualizar_tudo(so=None, servidor=None):
                 aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
             return linhas, etfs, texto
         global QUADRO
-        QUADRO = texto_quadro(totais_carteira(linhas, etfs))
+        QUADRO = dados_posicao(linhas, etfs)
+        gravar_posicao(QUADRO)
         assin = {k for ls in estado.get("linhas_ant", {}).values() for d in ls if txt(d.get("sel"))
                  for k in (txt(d.get("nome")), txt(d.get("ticker")).upper())}
         SYNC.update(universo=sorted(estado.get("universo") or []), assinalados=sorted(assin))
