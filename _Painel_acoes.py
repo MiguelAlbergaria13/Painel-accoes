@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V014", "15/11/2026"
+VERSAO, DATA_VERSAO = "V016", "15/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3800,10 +3800,11 @@ main{padding:8px 10px 40px}
 .alerta{color:#d93025;font-weight:600}
 .vazio{text-align:center;color:var(--mu);margin-top:40px}
 .hold{display:inline-block;margin:6px 0 0 8px;font-size:13px;font-weight:600;color:var(--tx)}
-.pos{display:grid;grid-template-columns:0.7fr 1fr 1.5fr;gap:6px;margin-top:8px}
+.pos{display:grid;grid-template-columns:0.8fr 1fr 1.5fr 1.2fr;gap:5px;margin-top:8px}
 .pos div{background:#fff8e1;border-radius:8px;padding:5px 8px;font-size:11px;color:var(--mu)}
 @media (prefers-color-scheme:dark){.pos div{background:#3a3220}}
-.pos b{display:block;font-size:14px;color:var(--tx)}
+.pos b{display:block;font-size:13px;color:var(--tx)}
+@media (max-width:420px){.pos{grid-template-columns:1fr 1fr}}
 .card.ds{background:#fde7ea}
 @media (prefers-color-scheme:dark){.card.ds{background:#3b2228}}
 #glob{background:var(--card);border:1px solid var(--li);border-radius:12px;margin:8px 10px 0;padding:8px 12px;font-size:13px}
@@ -3827,6 +3828,16 @@ main{padding:8px 10px 40px}
 <script>
 const D=__DATA__;
 document.getElementById('at').textContent=D.at;
+// ao abrir a app (ou ao voltar a ela): se já houver dados mais recentes publicados, recarrega sozinha
+async function verNovos(){
+  if(location.protocol==='file:')return;
+  try{const v=(await (await fetch('versao.txt?'+Date.now(),{cache:'no-store'})).text()).trim();
+    let ult=0;try{ult=+sessionStorage.getItem('rec')||0;}catch(e){}
+    if(v&&D.v&&v>D.v&&Date.now()-ult>60000){try{sessionStorage.setItem('rec',Date.now());}catch(e){}
+      location.replace(location.pathname+'?v='+v);}}catch(e){}
+}
+verNovos();
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')verNovos();});
 setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.length)return;
   const c=t.reduce((s,d)=>s+d.ce,0),v=t.reduce((s,d)=>s+d.vd,0),l=v-c,cor=l>=0?'#1e8e3e':'#d93025';
   const g=document.getElementById('glob');g.style.display='block';
@@ -3850,7 +3861,7 @@ if(D.gh&&D.gh.t){
       const ini=Date.now();
       const t=setInterval(async()=>{
         try{const v=(await (await fetch('versao.txt?'+Date.now(),{cache:'no-store'})).text()).trim();
-          if(v&&v!==D.v){clearInterval(t);location.reload();}}catch(e){}
+          if(v&&v!==D.v){clearInterval(t);location.replace(location.pathname+'?v='+v);}}catch(e){}
         if(Date.now()-ini>30*60000){clearInterval(t);av.textContent='Ainda sem dados novos ao fim de 30 min: recarrega mais tarde.';}
       },30000);
     }catch(e){av.textContent='Não foi possível pedir a atualização ('+e.message+').';}
@@ -3870,7 +3881,8 @@ function cartao(d){
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
   <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.qn!=null?`<div class="pos"><div>Nº<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
-  <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct(d.lpp)})</span>`:''}</b></div></div>`:''}
+  <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct(d.lpp)})</span>`:''}</b></div>
+  <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
   <div>Máxima (ordem)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
   <div class="rt">Vendas</div><div>Razoável<b>${pr(d.va)} <small>${pct(d.vap)}</small></b></div>
@@ -3892,8 +3904,8 @@ function mostrar(){
     return l.slice().sort((a,b)=>o==='n'?String(a.n).localeCompare(b.n):o==='tmp'?(b.tmp??-9)-(a.tmp??-9):
       o==='vd'?(b.vd??-1)-(a.vd??-1):(b.nt??-9)-(a.nt??-9));};
   const tot=l=>{const v=l.filter(d=>d.vd!=null);if(!v.length)return '';
-    const lp=l.filter(d=>d.le!=null).reduce((s,d)=>s+d.le,0);
-    return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}</span>`:'');};
+    const lp=l.filter(d=>d.le!=null).reduce((s,d)=>s+d.le,0), ce=l.filter(d=>d.ce!=null).reduce((s,d)=>s+d.ce,0);
+    return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}${ce?' ('+pct(lp/ce)+')':''}</span>`:'');};
   const el=document.getElementById('lst');
   let h='';
   if(aba==='X'){
@@ -3920,8 +3932,26 @@ mostrar();
 # ---- publicação no GitHub Pages (endereço https fixo, para o atalho no telemóvel)
 # A página vai cifrada (AES-256-GCM, chave da palavra-passe por PBKDF2-SHA256): quem não a souber vê só a caixa.
 # Configuração (utilizador, repositório, token e palavra-passe) num ficheiro só deste PC, fora do OneDrive.
-GH_USER, GH_REPO = "MiguelAlbergaria13", "painel-acoes"
+GH_USER, GH_REPO = "MiguelAlbergaria13", "Painel-acoes"      # o endereço da página distingue maiúsculas
 GH_URL = f"https://{GH_USER.lower()}.github.io/{GH_REPO}/"
+
+
+def ficheiro_link_app():
+    """Na pasta do painel: o endereço da app do telemóvel (texto e atalho da Internet)."""
+    if "--servidor" in sys.argv:
+        return
+    try:
+        txt_l = (f"App do telemóvel (página atualizada no GitHub, com a palavra-passe):\n{GH_URL}\n\n"
+                 "No Android: abre este endereço no Chrome > menu ⋮ > Adicionar ao ecrã principal.\n"
+                 "Se o atalho antigo abrir outra página, apaga-o e cria-o outra vez a partir deste endereço.\n")
+        for nome, conteudo in (("_App_telemovel_link.txt", txt_l),
+                               ("_App_telemovel.url", f"[InternetShortcut]\nURL={GH_URL}\n")):
+            f = os.path.join(PASTA, nome)
+            if not os.path.exists(f) or open(f, encoding="utf-8").read() != conteudo:
+                with open(f, "w", encoding="utf-8") as fh:
+                    fh.write(conteudo)
+    except Exception:
+        pass
 FICH_GH = os.path.join(os.environ.get("APPDATA") or PASTA, "PainelAcoes", "github.json")
 PBKDF2_ITER = 200000
 PUB_TPL = r'''<!DOCTYPE html>
@@ -4982,6 +5012,7 @@ def atualizar_servidor(tipo):
 
 
 def main():
+    ficheiro_link_app()
     if "--servidor" in sys.argv:             # GitHub Actions: python _Painel_acoes.py --servidor completa|precos
         i = sys.argv.index("--servidor")
         tipo = (sys.argv[i + 1] if len(sys.argv) > i + 1 else "completa").strip().lower() or "completa"
