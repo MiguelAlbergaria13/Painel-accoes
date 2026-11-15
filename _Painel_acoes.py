@@ -406,8 +406,37 @@ C_AT = "O3"           # "Atualizado em ..."
 C_ORD_EST = "O4"
 C_PRECOS_EST = "O5"   # estado do ↻ PREÇOS
 CEL_ANTIGAS = {"ord": "E3", "lp": "D4", "ref": "H5", "data": "J5", "at": "K3"}   # painéis até à V011
-SELECOES = ["Tudo", "Assinalados (coluna A)"] + [f"NG ≥ {x:.1f}".replace(".", ",") for x in
-                                                  (1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5)]
+def ler_sel(v):
+    """Valor da lista 'o que atualizar' (aceita 'NG ≥ 2,5' / 'NG ≥ 2.5' / 'NG>=2,5'); None se não for nenhum."""
+    t = txt(v)
+    if not t:
+        return None
+    if t.lower().startswith("tudo"):
+        return SELECOES[0]
+    if t.lower().startswith("assinal"):
+        return SELECOES[1]
+    if t == SELECOES[2]:
+        return t
+    m = re.search(r"(\d+[.,]?\d*)", t)
+    if m:                                  # "NG ≥ 2,5" de versões anteriores, ou só o número
+        return f"NG ≥ {float(m.group(1).replace(',', '.')):.2f}".rstrip("0").rstrip(".")
+    return None
+
+
+def ler_sel_valor(sel, valor):
+    """'NG ≥ (valor ao lado)' + o número em G3 -> 'NG ≥ 3.2' (None se faltar o número)."""
+    if sel != SELECOES[2]:
+        return sel
+    try:
+        v = float(str(valor).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        print(f"Escolheste 'NG ≥' mas falta o valor em {C_SEL_V}: atualiza-se tudo.")
+        return None
+    return f"NG ≥ {v:.2f}".rstrip("0").rstrip(".")
+
+
+SELECOES = ["Tudo", "Assinalados (coluna A)", "NG ≥ (valor ao lado)"]
+C_SEL_V = "G3"        # valor da nota global mínima (com "NG ≥")
 MARGEM_200 = 0.03     # regra da média de 200 dias: sai quando o fecho fica 3% abaixo dela; volta a entrar quando fecha acima
 
 
@@ -491,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V012", "15/11/2026"
+VERSAO, DATA_VERSAO = "V014", "15/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -757,8 +786,8 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws.title = nome
     ws["A1"] = titulo
     ws["A1"].font = Font(size=14, bold=True)
-    ws["A2"] = ("Coluna A: x nos títulos a atualizar (com \"Assinalados\" na lista ao lado do ▶ ATUALIZAR; também NG ≥ x; "
-                "as linhas não atualizadas ficam a rosa até serem atualizadas ou até um \"Tudo\"). Coluna B: x nos títulos que "
+    ws["A2"] = ("Coluna A: x nos títulos a atualizar (com \"Assinalados\" na lista ao lado do ▶ ATUALIZAR, "
+                "ou \"NG ≥\" com a nota mínima escrita ao lado; as linhas não atualizadas ficam a rosa até serem atualizadas ou até um \"Tudo\"). Coluna B: x nos títulos que "
                 "tens; colunas C e D: nº de ações e preço médio de compra por ação (na moeda da cotação) -> valor detido e "
                 "lucro/prejuízo, também na página do telemóvel e na folha Carteira. \"Situação em\": cada folha tem a sua data "
                 "(Atual ou uma data passada, escrita em qualquer formato). Só são atualizados os títulos que estão nas linhas "
@@ -777,9 +806,22 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws.merge_cells("A3:D3")
     botao(ws, "A3", "▶ ATUALIZAR " + ("AÇÕES" if ranking else "ETFs"),
           f"{PROTOCOLO}://atualizar/{'acoes' if ranking else 'etfs'}", "00A050", "006E37", 11)
-    campo("E3:G3", (estado or {}).get("sel" + ("" if ranking else "_e")) or SELECOES[0])
+    sel0 = (estado or {}).get("sel" + ("" if ranking else "_e")) or SELECOES[0]
+    val0 = None
+    if sel0.startswith("NG ≥ ") and sel0 != SELECOES[2]:
+        val0, sel0 = float(sel0.split("≥")[1]), SELECOES[2]
+    campo("E3:F3", sel0)
     lista_val(C_SEL, SELECOES)
     ws[C_SEL].font = Font(bold=True, size=9)
+    ws[C_SEL_V] = val0
+    ws[C_SEL_V].fill, ws[C_SEL_V].border = amarelo, borda
+    ws[C_SEL_V].font = Font(bold=True, size=9)
+    ws[C_SEL_V].number_format = "0.0#"
+    ws[C_SEL_V].alignment = Alignment(horizontal="center", vertical="center")
+    dvn = DataValidation(type="decimal", operator="between", formula1="0", formula2="5", allow_blank=True)
+    dvn.error, dvn.errorTitle = "Nota global de 0 a 5 (ex.: 3,2).", "Valor inválido"
+    ws.add_data_validation(dvn)
+    dvn.add(C_SEL_V)
     ws["H3"] = "Ordenar por:"
     ws["H3"].font = Font(bold=True)
     ws["H3"].alignment = Alignment(horizontal="right", vertical="center")
@@ -3365,8 +3407,10 @@ def ler_estado():
                     linhas_t = [v for v in t[0][1:] if txt(v[jt])]
                     estado.setdefault("universo", set()).update(
                         {txt(v[jn]) for v in linhas_t} | {txt(v[jt]).upper() for v in linhas_t})
-                    if novo and cab_ok(cab):                  # as linhas como estão (para a atualização seletiva)
-                        chaves = [k for k, *_ in COLS]
+                    if "Atualizar (x)" in cab:                # as linhas como estão (para a atualização seletiva)
+                        por_cab = {h: k for k, h, *_ in COLS}
+                        por_cab.update({CAB_ETF.get(k, h): k for k, h, *_ in COLS})
+                        chaves = [por_cab.get(h, f"_{j}") for j, h in enumerate(cab)]
                         estado.setdefault("linhas_ant", {})[idx] = [linha_lida(chaves, v) for v in linhas_t]
                     jq = cab.index("Nº de ações detidas") if "Nº de ações detidas" in cab else None
                     jp = cab.index("Preço médio de compra (por ação)") if "Preço médio de compra (por ação)" in cab else None
@@ -3396,15 +3440,21 @@ def ler_estado():
             for idx, suf in ((1, ""), (2, "_e")):     # cada folha com a sua data de referência e a sua seleção
                 rr = tentar([{"op": "ler", "folha": idx, "rng": cel("ref")}, {"op": "ler", "folha": idx, "rng": cel("data")},
                              {"op": "ler", "folha": idx, "rng": cel("lp")}]
-                            + ([{"op": "ler", "folha": idx, "rng": C_SEL}] if novo else []))
+                            + ([{"op": "ler", "folha": idx, "rng": C_SEL}, {"op": "ler", "folha": idx, "rng": C_SEL_V}]
+                               if novo else []))
                 if rr:
                     esc_r = txt(rr[0][0][0]) or "Atual"
                     esc_r = "Data (escrever ao lado)" if esc_r.startswith("Data (") else esc_r
                     estado["ref_escolha" + suf], estado["ref_data" + suf] = esc_r, rr[1][0][0]
                     if idx == 1 and rr[2][0][0] not in (None, ""):
                         estado["lp_min"] = ler_lp_min(rr[2][0][0])
-                    if novo and txt(rr[3][0][0]) in SELECOES:
-                        estado["sel" + suf] = txt(rr[3][0][0])
+                    if novo:
+                        sel = ler_sel_valor(ler_sel(rr[3][0][0]), rr[4][0][0])
+                        print(f"{'Ações' if idx == 1 else 'ETFs'}: lista 'o que atualizar' = {sel or txt(rr[3][0][0]) or '(vazia)'}"
+                              f"; {sum(1 for d in estado.get('linhas_ant', {}).get(idx, []) if txt(d.get('sel')))} "
+                              f"título(s) com x na coluna A.")
+                        if sel:
+                            estado["sel" + suf] = sel
         nomes_crit = [c[0] for c in CRITERIOS_ORD]
         for idx in (1, 2):
             r = tentar([{"op": "ler", "folha": idx, "rng": (C_ORD if novo else CEL_ANTIGAS["ord"]) if recente else "D3"},
@@ -3765,7 +3815,7 @@ main{padding:8px 10px 40px}
 <header>
 <div style="display:flex;align-items:center;gap:8px"><h1 style="flex:1">Painel de ações</h1>
 <button id="bt" style="display:none;border:0;border-radius:8px;padding:6px 10px;background:rgba(255,255,255,.2);color:#fff;font-size:14px">↻ Atualizar</button></div>
-<div id="mn" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap"><button class="tab" data-a="precos">Preços</button><button class="tab" data-a="completa">Tudo</button><button class="tab" data-a="assinalados">Assinalados</button><select id="ng" class="tab" style="flex:1"><option value="">NG ≥ …</option><option>1.5</option><option>2.0</option><option>2.5</option><option>3.0</option><option>3.5</option><option>4.0</option><option>4.5</option></select></div>
+<div id="mn" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap"><button class="tab" data-a="precos">Preços</button><button class="tab" data-a="completa">Tudo</button><button class="tab" data-a="assinalados">Assinalados</button><input id="ng" class="tab" type="number" min="0" max="5" step="0.1" placeholder="NG ≥" style="width:70px"><button class="tab" id="ngok">OK</button></div>
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
 <div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button></div>
@@ -3786,8 +3836,10 @@ if(D.gh&&D.gh.t){
   bt.style.display='block';
   bt.onclick=()=>{mn.style.display=mn.style.display==='flex'?'none':'flex';};
   const ng=document.getElementById('ng');
-  ng.onchange=()=>{if(ng.value){const b={dataset:{a:'ng:'+ng.value}};pedir(b);ng.value='';}};
-  mn.querySelectorAll('button').forEach(b=>b.onclick=()=>pedir(b));
+  document.getElementById('ngok').onclick=()=>{const v=parseFloat(String(ng.value).replace(',','.'));
+    if(!(v>=0&&v<=5)){av.style.display='block';av.textContent='Escreve uma nota global de 0 a 5.';return;}
+    pedir({dataset:{a:'ng:'+v}});ng.value='';};
+  mn.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>pedir(b));
   async function pedir(b){
     mn.style.display='none';av.style.display='block';av.textContent='A pedir a atualização…';
     try{
@@ -4291,7 +4343,10 @@ def folha_procurar(wb, pf):
           "7030A0", "4B2070")
     ws.merge_cells("G8:I8")
     botao(ws, "G8", "➕ ACRESCENTAR MARCADOS", f"{PROTOCOLO}://acrescentar/{qual}", "00A050", "006E37")
-    ws.row_dimensions[8].height = 26
+    botao(ws, "J8", "↺ ADICIONAR TÍTULOS DA LISTA BASE (exceto se já estão nessa ou noutra moeda)",
+          f"{PROTOCOLO}://base/{qual}", "BF8F00", "7F6000", 9)
+    ws["J8"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[8].height = 30
     ws["B9"] = "Estado:"
     ws["B9"].alignment = Alignment(horizontal="right")
     ws[C_ESTADO] = ("Escreve um nome e carrega em ▶ PROCURAR, ou escolhe o critério e a " +
@@ -4306,7 +4361,8 @@ def folha_procurar(wb, pf):
                  + "A mesma empresa / fundo em várias bolsas aparece uma só vez, na bolsa com mais negócio (as outras "
                  "ficam na última coluna). Vêm marcados com x os que ainda não estão no painel; os que já lá estão não "
                  "têm x e não se copiam. ➕ ACRESCENTAR MARCADOS: junta os que têm x à folha Acrescentados e às folhas "
-                 "Ranking / ETFs (com os dados todos).")
+                 "Ranking / ETFs (com os dados todos). ↺ LISTA BASE: mostra os títulos da lista base do script que não estão "
+                 "nas folhas (nem nessa nem noutra bolsa / moeda), marcados com x, para os voltares a acrescentar.")
     ws["B10"].font = Font(italic=True, size=9, color="595959")
     ws["B10"].alignment = Alignment(wrap_text=True, vertical="top")
     ws.merge_cells("B10:J10")
@@ -4359,12 +4415,42 @@ def nome_norm(nome):
     return " ".join(w for w in s.split() if w not in _LEGAL)
 
 
+def _nas_folhas(ex):
+    """Tickers, nomes e códigos das linhas das folhas Ranking / ETFs -> nome da folha (None se não der para ler)."""
+    ultima = get_column_letter(len(COLS))
+    try:
+        r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
+    except Exception:
+        return None
+    ja, nomes, cods = {}, {}, {}
+    for idx, tab in zip((1, 2), r):
+        cab = [txt(v) for v in (tab[0] if tab else [])]
+        if "Ticker Yahoo" not in cab or "Empresa / ETF" not in cab:
+            return None
+        jn, jt = cab.index("Empresa / ETF"), cab.index("Ticker Yahoo")
+        jc = cab.index("Código") if "Código" in cab else None
+        onde = "Ranking" if idx == 1 else "ETFs"
+        for v in tab[1:]:
+            if txt(v[jt]):
+                ja.setdefault(txt(v[jt]).upper(), onde)
+                nomes.setdefault(nome_norm(v[jn]), onde)
+                if _nome_chave(v[jn]):
+                    nomes.setdefault(_nome_chave(v[jn]), onde)
+                if jc is not None and txt(v[jc]):
+                    cods.setdefault(txt(v[jc]).upper(), onde)
+    return ja, nomes, cods
+
+
 def _ja_no_painel(ex):
-    """Tickers e nomes já no painel (listas do script + folha Acrescentados) -> onde estão."""
-    ja = {t.upper(): "Ranking" for _, _, t, _ in ACOES}
-    ja.update({t.upper(): "ETFs" for _, _, t, _ in ETFS})
-    nomes = {nome_norm(n): "Ranking" for n, _, _, _ in ACOES}
-    nomes.update({nome_norm(n): "ETFs" for n, _, _, _ in ETFS})
+    """Tickers e nomes já no painel (linhas das folhas Ranking / ETFs + folha Acrescentados) -> onde estão."""
+    nf = _nas_folhas(ex)
+    if nf is None:                         # não se leram as folhas: as listas do script
+        ja = {t.upper(): "Ranking" for _, _, t, _ in ACOES}
+        ja.update({t.upper(): "ETFs" for _, _, t, _ in ETFS})
+        nomes = {nome_norm(n): "Ranking" for n, _, _, _ in ACOES}
+        nomes.update({nome_norm(n): "ETFs" for n, _, _, _ in ETFS})
+    else:
+        ja, nomes, _ = nf
     for n, c, t, b, tipo in ler_acrescentados(ex):
         ja.setdefault(t.upper(), "Acrescentados")
         nomes.setdefault(nome_norm(n), "Acrescentados")
@@ -4724,6 +4810,39 @@ def etfs_significativos():
     time.sleep(2)
 
 
+def da_lista_base(pf):
+    """↺ LISTA BASE: os títulos da lista do script que já não estão nas folhas (nem nessa bolsa / moeda nem noutra)."""
+    ex = Excel(FICHEIRO)
+    _procurar_formato_ok(ex, pf)
+    etf = pf == FOLHA_PROC_ETF
+    nf = _nas_folhas(ex)
+    if nf is None:
+        raise SystemExit("Não consegui ler as folhas Ranking / ETFs: carrega primeiro em ▶ ATUALIZAR.")
+    ja, nomes, cods = nf
+    try:                                   # a mesma ação noutra bolsa (outra moeda) também conta
+        with open(FICH_EUR, encoding="utf-8") as f:
+            for cm in json.load(f).values():
+                for t, v in cm.items():
+                    if v.get("alt") and v["alt"].upper() in ja:
+                        ja.setdefault(t.upper(), ja[v["alt"].upper()])
+    except Exception:
+        pass
+    acr = {t.upper() for _, _, t, _, _ in ler_acrescentados(ex)}
+    linhas = []
+    for n, c, t, b in (ETFS if etf else ACOES):
+        if (t.upper() in ja or nome_norm(n) in nomes or (_nome_chave(n) and _nome_chave(n) in nomes)
+                or (c and c.upper() in cods)):
+            continue
+        linhas.append(["x", n, "ETF" if etf else "Ação", c, t, b, None, None,
+                       "Acrescentados (não está nas folhas)" if t.upper() in acr else None, None])
+    _escrever_resultados(ex, pf, linhas, f"{datetime.now():%d/%m/%Y %H:%M} · lista base: {len(linhas)} "
+                         f"{'ETF(s)' if etf else 'ação(ões)'} que não estão na folha {'ETFs' if etf else 'Ranking'} "
+                         "(nem noutra bolsa / moeda), marcados com x. Tira os x que não quiseres e carrega em "
+                         "➕ ACRESCENTAR MARCADOS." if linhas else
+                         f"{datetime.now():%d/%m/%Y %H:%M} · lista base: estão todos na folha (nesta ou noutra moeda).")
+    time.sleep(2)
+
+
 def acrescentar_marcados(pf):
     ex = Excel(FICHEIRO)
     _procurar_formato_ok(ex, pf)
@@ -4890,6 +5009,8 @@ def main():
             etfs_significativos()
         else:
             mais_significativas()
+    elif "://base" in arg:                   # folhas Procurar: ↺ LISTA BASE (/acoes ou /etfs)
+        da_lista_base(FOLHA_PROC_ETF if "etf" in arg else FOLHA_PROC)
     elif "acrescentar" in arg:               # folhas Procurar: ➕ ACRESCENTAR MARCADOS (/acoes ou /etfs)
         acrescentar_marcados(FOLHA_PROC_ETF if "etf" in arg else FOLHA_PROC)
     elif "precos" in arg:                    # ↻ PREÇOS (rápido)
@@ -4961,10 +5082,15 @@ def atualizar_tudo(so=None, servidor=None):
         ant = estado.get("linhas_ant", {})
 
         def escolhidos(idx, sel):
-            if not sel or sel == SELECOES[0] or idx not in ant:
+            if not sel or sel == SELECOES[0]:
+                return None
+            if idx not in ant:
+                print(f"{'Ações' if idx == 1 else 'ETFs'}: não consegui ler as linhas da folha: atualiza-se tudo.")
                 return None
             if sel.startswith("Assinalados"):
                 ls = [d for d in ant[idx] if txt(d.get("sel"))]
+                if not ls:
+                    print(f"{'Ações' if idx == 1 else 'ETFs'}: 'Assinalados' mas nenhum x na coluna A: não se atualiza nenhum título.")
             else:
                 lim = float(sel.split("≥")[1].strip().replace(",", "."))
                 ls = [d for d in ant[idx] if isinstance(d.get("nota"), (int, float)) and d["nota"] >= lim]
