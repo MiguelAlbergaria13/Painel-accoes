@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V022", "15/11/2026"
+VERSAO, DATA_VERSAO = "V024", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3766,9 +3766,22 @@ def precos_agora(tickers, _repetir=False):
         hora = datetime.fromtimestamp(ts.timestamp())   # hora deste PC (Lisboa)
         d = serie(diario, t)
         dia = lambda ix: (pd.Timestamp(ix).tz_convert(zona) if (zona and pd.Timestamp(ix).tzinfo) else pd.Timestamp(ix)).date()
+        # as velas de 1 minuto do Yahoo às vezes param antes do fim da sessão (p. ex. a TSM ficou nas 14:00 de NY):
+        # se a vela diária tiver um dia mais recente, ou se for do mesmo dia e a sessão já tiver acabado sem que as
+        # velas de 1 minuto lá cheguem, usa-se o fecho da vela diária
+        if len(d):
+            d_dia, d_fecho = dia(d.index[-1]), float(d.iloc[-1])
+            agora = pd.Timestamp.now(tz=zona) if zona else None
+            parou = (zona is not None and d_dia == local.date() and sessao == "sessão normal"
+                     and (agora.date() > d_dia or agora.hour * 60 + agora.minute >= 965)
+                     and local.hour * 60 + local.minute < 955)
+            if d_dia > local.date() or parou:
+                preco, sessao = d_fecho, "fecho"
+                hora = None
+                local = pd.Timestamp(d_dia).tz_localize(zona) if zona else pd.Timestamp(d_dia)
         anteriores = d[[dia(ix) < local.date() for ix in d.index]] if len(d) else d
         ref = float(anteriores.iloc[-1]) if len(anteriores) else None
-        out[t] = (preco, f"{sessao} {hora:%d/%m %H:%M}", ref)
+        out[t] = (preco, f"{sessao} {local:%d/%m}" if hora is None else f"{sessao} {hora:%d/%m %H:%M}", ref)
     faltam = [t for t in tickers if t not in out]
     if faltam and not _repetir:                        # verificação: os que falharam no pedido em conjunto, um a um
         print(f"Verificação: {len(faltam)} sem preço; a pedir outra vez um a um...")
@@ -4142,33 +4155,107 @@ PUB_TPL = r'''<!DOCTYPE html>
 <style>
 body{margin:0;font-family:system-ui,-apple-system,Roboto,sans-serif;background:#f4f5f7;color:#1c1e21;display:flex;min-height:100vh;align-items:center;justify-content:center}
 @media (prefers-color-scheme:dark){body{background:#121417;color:#e8eaed}}
-form{width:min(320px,90vw);text-align:center}
+.cx{width:min(320px,90vw);text-align:center}
 h1{font-size:20px;font-weight:600}
 input{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border-radius:10px;border:1px solid #bbb;margin:10px 0}
-button{width:100%;font-size:17px;padding:12px;border:0;border-radius:10px;background:#1f3b57;color:#fff}
+button{width:100%;font-size:17px;padding:12px;border:0;border-radius:10px;background:#1f3b57;color:#fff;margin-top:8px}
+button.sec{background:transparent;color:inherit;border:1px solid #999}
 label{font-size:14px;display:flex;gap:8px;align-items:center;justify-content:center;margin-top:6px}
 #e{color:#d93025;font-size:14px;min-height:20px}
+.dig{font-size:54px;margin:4px 0}
 </style></head><body>
-<form id="f"><h1>Painel de ações</h1>
+<form id="f" class="cx" style="display:none"><h1>Painel de ações</h1>
 <input id="p" type="password" placeholder="Palavra-passe" autocomplete="current-password">
-<button>Abrir</button><label><input id="m" type="checkbox" checked style="width:auto;margin:0"> lembrar neste telemóvel</label>
+<button>Abrir</button>
+<label id="lb" style="display:none"><input id="b" type="checkbox" checked style="width:auto;margin:0"> pedir impressão digital (ou o PIN / padrão do telemóvel) em vez da palavra-passe</label>
+<label id="lm"><input id="m" type="checkbox" checked style="width:auto;margin:0"> lembrar neste telemóvel</label>
 <p id="e"></p></form>
+<div id="d" class="cx" style="display:none"><h1>Painel de ações</h1><div class="dig">🔒</div>
+<button id="bd">Desbloquear com impressão digital</button>
+<button id="bp" class="sec">Usar a palavra-passe</button><p id="e2" style="color:#d93025;font-size:14px"></p></div>
+<div id="a" class="cx" style="display:none"><h1>Painel de ações</h1><div class="dig">🔒</div>
+<p>Passar a pedir a impressão digital (ou o PIN / padrão do telemóvel) para abrir o painel?</p>
+<button id="ba">Sim, ativar</button><button id="bn" class="sec">Agora não</button></div>
 <script>
 const DADOS="__DADOS__", ITER=__ITER__;
-function b64(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}
+const LS={get:k=>{try{return localStorage.getItem(k);}catch(e){return null;}},set:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}},
+  del:k=>{try{localStorage.removeItem(k);}catch(e){}}};
+const SS={get:k=>{try{return sessionStorage.getItem(k);}catch(e){return null;}},set:(k,v)=>{try{sessionStorage.setItem(k,v);}catch(e){}}};
+const B=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0)), S=u=>btoa(String.fromCharCode(...new Uint8Array(u)));
+const rnd=n=>crypto.getRandomValues(new Uint8Array(n)), ver=id=>{['f','d','a'].forEach(x=>document.getElementById(x).style.display=x===id?'block':'none');};
 async function abrir(pw){
-  const b=b64(DADOS), sal=b.slice(0,16), iv=b.slice(16,28), ct=b.slice(28);
+  const b=B(DADOS), sal=b.slice(0,16), iv=b.slice(16,28), ct=b.slice(28);
   const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
   const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:sal,iterations:ITER,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
   const html=new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},k,ct));
+  SS.set('painel_s',pw);                 // enquanto a app estiver aberta não volta a pedir (p. ex. ao recarregar dados novos)
   document.open();document.write(html);document.close();
 }
-let guardada=null;try{guardada=localStorage.getItem('painel_pw');}catch(e){}
-if(guardada) abrir(guardada).catch(()=>{try{localStorage.removeItem('painel_pw');}catch(e){}});
+// impressão digital: WebAuthn (chave do próprio telemóvel). Com a extensão PRF a palavra-passe fica cifrada com uma chave
+// que só a impressão digital liberta; sem PRF fica guardada e a impressão digital é só uma porta.
+async function salPrf(){return new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('painel-acoes-prf-v1')));}
+async function bioGet(id){
+  const a=await navigator.credentials.get({publicKey:{challenge:rnd(32),allowCredentials:[{type:'public-key',id:B(id)}],
+    userVerification:'required',timeout:60000,extensions:{prf:{eval:{first:await salPrf()}}}}});
+  const r=a.getClientExtensionResults();
+  return r.prf&&r.prf.results&&r.prf.results.first?new Uint8Array(r.prf.results.first):null;
+}
+const chave=(out,uso)=>crypto.subtle.importKey('raw',out.slice(0,32),{name:'AES-GCM'},false,uso);
+async function ativarBio(pw){
+  const c=await navigator.credentials.create({publicKey:{challenge:rnd(32),rp:{name:'Painel de ações'},
+    user:{id:rnd(16),name:'painel',displayName:'Painel de ações'},
+    pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+    authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required',residentKey:'preferred'},
+    timeout:60000,extensions:{prf:{}}}});
+  const id=S(c.rawId), out=await bioGet(id), rec={id};
+  if(out){const iv=rnd(12);rec.iv=S(iv);
+    rec.ct=S(await crypto.subtle.encrypt({name:'AES-GCM',iv},await chave(out,['encrypt']),new TextEncoder().encode(pw)));LS.del('painel_pw');}
+  else {rec.simples=1;LS.set('painel_pw',pw);}
+  LS.set('painel_bio',JSON.stringify(rec));
+}
+async function abrirBio(){
+  const rec=JSON.parse(LS.get('painel_bio')), out=await bioGet(rec.id);
+  let pw;
+  if(rec.ct){if(!out)throw new Error('sem PRF');
+    pw=new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:B(rec.iv)},await chave(out,['decrypt']),B(rec.ct)));}
+  else pw=LS.get('painel_pw');
+  await abrir(pw);
+}
+function erroBio(e){document.getElementById('e2').textContent=(e&&e.name==='NotAllowedError')?'Cancelado. Toca no botão para tentar outra vez.':
+  (e&&e.name==='OperationError'?'Palavra-passe mudou: usa a palavra-passe.':'Não foi possível ('+((e&&e.message)||e)+').');}
+document.getElementById('bd').onclick=()=>abrirBio().catch(erroBio);
+document.getElementById('bp').onclick=()=>ver('f');
+async function temBio(){try{return !!(window.PublicKeyCredential&&await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());}catch(e){return false;}}
+(async()=>{
+  const bio=await temBio();
+  if(bio){document.getElementById('lb').style.display='flex';}
+  document.getElementById('lm').style.display=bio?'none':'flex';
+  const s=SS.get('painel_s');
+  if(s){try{await abrir(s);return;}catch(e){}}
+  if(LS.get('painel_bio')&&bio){ver('d');abrirBio().catch(erroBio);return;}
+  const g=LS.get('painel_pw');
+  if(g&&bio&&!LS.get('painel_bio_nao')){                 // já tinha a palavra-passe guardada: propõe a impressão digital
+    ver('a');
+    document.getElementById('ba').onclick=()=>ativarBio(g).then(()=>abrir(g)).catch(e=>{alert('Não foi possível ativar: '+((e&&e.message)||e));abrir(g);});
+    document.getElementById('bn').onclick=()=>{LS.set('painel_bio_nao','1');abrir(g).catch(()=>ver('f'));};
+    return;
+  }
+  if(g){try{await abrir(g);return;}catch(e){LS.del('painel_pw');}}
+  ver('f');
+})();
+document.getElementById('b').onchange=e=>{document.getElementById('lm').style.display=e.target.checked?'none':'flex';};
 document.getElementById('f').addEventListener('submit',async ev=>{
   ev.preventDefault();const pw=document.getElementById('p').value;
-  try{ if(document.getElementById('m').checked){try{localStorage.setItem('painel_pw',pw);}catch(e){}} await abrir(pw);}
-  catch(e){try{localStorage.removeItem('painel_pw');}catch(x){} document.getElementById('e').textContent='Palavra-passe errada.';}
+  try{await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+    const usaBio=document.getElementById('lb').style.display!=='none'&&document.getElementById('b').checked;
+    // confirma primeiro que a palavra-passe está certa (abrir só no fim, porque substitui a página)
+    const b=B(DADOS);const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+    const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b.slice(0,16),iterations:ITER,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
+    await crypto.subtle.decrypt({name:'AES-GCM',iv:b.slice(16,28)},k,b.slice(28));
+    if(usaBio){try{await ativarBio(pw);}catch(e){alert('Impressão digital não ativada: '+((e&&e.message)||e));}}
+    else if(document.getElementById('m').checked){LS.set('painel_pw',pw);}
+    await abrir(pw);}
+  catch(e){document.getElementById('e').textContent='Palavra-passe errada.';}
 });
 </script></body></html>
 '''
