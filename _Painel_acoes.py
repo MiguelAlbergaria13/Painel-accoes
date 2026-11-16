@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V028", "16/11/2026"
+VERSAO, DATA_VERSAO = "V029", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -972,7 +972,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws.title = nome
     ws["A1"] = titulo
     ws["A1"].font = Font(size=14, bold=True)
-    ws["A2"] = ("Coluna A: x nos títulos a atualizar (com \"Assinalados\" na lista ao lado do ▶ ATUALIZAR, "
+    ws["E2"] = ("Coluna A: x nos títulos a atualizar (com \"Assinalados\" na lista ao lado do ▶ ATUALIZAR, "
                 "ou \"NG ≥\" com a nota mínima escrita ao lado; as linhas não atualizadas ficam a rosa até serem atualizadas ou até um \"Tudo\"). Coluna B: x nos títulos que "
                 "tens; colunas C e D: nº de ações e preço médio de compra por ação (na moeda da cotação) -> valor detido e "
                 "lucro/prejuízo, também na página do telemóvel e na folha Carteira. \"Situação em\": cada folha tem a sua data "
@@ -989,7 +989,12 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 + "LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. "
                 + "▣ VER POSIÇÃO: janela com o valor de compra, o valor atual e o lucro/prejuízo da carteira. "
                 + f"Se os botões não responderem, corre uma vez o {os.path.basename(BAT)} (isso ativa-os neste PC).")
-    ws["A2"].font = Font(italic=True, size=9, color="595959")
+    ws["E2"].font = Font(italic=True, size=9, color="595959")
+    ws["E2"].alignment = Alignment(vertical="center")
+    # linha 2: ▶ ATUALIZAR TUDO (as duas folhas)
+    ws.merge_cells("A2:D2")
+    botao(ws, "A2", "▶ ATUALIZAR TUDO", f"{PROTOCOLO}://atualizar/tudo", "1F3B57", "0F2236", 11)
+    ws.row_dimensions[2].height = 24
     # linha 3: ▶ ATUALIZAR · o que atualizar · Ordenar por · ↕ ORDENAR · data
     ws.merge_cells("A3:D3")
     botao(ws, "A3", "▶ ATUALIZAR " + ("AÇÕES" if ranking else "ETFs"),
@@ -4040,7 +4045,7 @@ main{padding:8px 10px 40px}
 <body>
 <header>
 <div style="display:flex;align-items:center;gap:8px"><h1 style="flex:1">Painel de ações</h1>
-<button id="bt" style="display:none;border:0;border-radius:8px;padding:6px 10px;background:rgba(255,255,255,.2);color:#fff;font-size:14px">↻ Atualizar</button></div>
+<button id="bt" style="display:none;border:0;border-radius:8px;padding:6px 10px;background:rgba(255,255,255,.2);color:#fff;font-size:14px">↻ Atualizar tudo</button></div>
 <div id="mn" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap"><button class="tab" data-a="precos">Preços</button><button class="tab" data-a="completa">Tudo</button><button class="tab" data-a="assinalados">Assinalados</button><input id="ng" class="tab" type="number" min="0" max="5" step="0.1" placeholder="NG ≥" style="width:70px"><button class="tab" id="ngok">OK</button></div>
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
@@ -4077,20 +4082,26 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
-  bt.onclick=()=>{mn.style.display=mn.style.display==='flex'?'none':'flex';};
+  bt.onclick=()=>pedirTudo();
   const ng=document.getElementById('ng');
   document.getElementById('ngok').onclick=()=>{const v=parseFloat(String(ng.value).replace(',','.'));
     if(!(v>=0&&v<=5)){av.style.display='block';av.textContent='Escreve uma nota global de 0 a 5.';return;}
     pedir({dataset:{a:'ng:'+v}});ng.value='';};
   mn.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>pedir(b));
-  window.pedirPrecos=()=>pedir({dataset:{a:'precos'}});
+  window.pedirTudo=()=>{
+    let u=0;try{u=+sessionStorage.getItem('pedido')||0;}catch(e){}
+    if(Date.now()-u<15*60000){av.style.display='block';
+      av.textContent='Atualização já pedida há '+Math.max(1,Math.round((Date.now()-u)/60000))+' min: demora cerca de 10-15 min e a página recarrega sozinha.';return;}
+    try{sessionStorage.setItem('pedido',Date.now());}catch(e){}
+    pedir({dataset:{a:'completa'}});};
+  const pedirTudo=window.pedirTudo;
   async function pedir(b){
     mn.style.display='none';av.style.display='block';av.textContent='A pedir a atualização…';
     try{
       const r=await fetch(`https://api.github.com/repos/${D.gh.o}/${D.gh.r}/actions/workflows/painel.yml/dispatches`,{method:'POST',
         headers:{'Authorization':'Bearer '+D.gh.t,'Accept':'application/vnd.github+json'},body:JSON.stringify({ref:'main',inputs:{tipo:b.dataset.a}})});
-      if(r.status!==204) throw new Error('erro '+r.status);
-      av.textContent='Pedido enviado. A página recarrega sozinha quando os dados novos chegarem.';
+      if(r.status!==204){try{sessionStorage.removeItem('pedido');}catch(e){} throw new Error('erro '+r.status);}
+      av.textContent='Atualização de tudo pedida (cerca de 10-15 min). A página recarrega sozinha quando os dados novos chegarem.';
       const ini=Date.now();
       const t=setInterval(async()=>{
         try{const v=(await (await fetch('versao.txt?'+Date.now(),{cache:'no-store'})).text()).trim();
@@ -4108,16 +4119,13 @@ if(D.gh&&D.gh.t){
     y0=(scrollY<=0&&qd.style.display!=='block'&&e.touches.length===1)?e.touches[0].clientY:null;dy=0;},{passive:true});
   addEventListener('touchmove',e=>{if(y0==null)return;dy=e.touches[0].clientY-y0;
     if(dy>12){ptr.style.display='block';ptr.style.transform=`translate(-50%,${Math.min(dy,140)/2}px)`;
-      ptr.textContent=dy>LIM?'↻ Solta para atualizar':'↓ Puxa para atualizar';ptr.classList.toggle('ok',dy>LIM);}
+      ptr.textContent=dy>LIM?'↻ Solta para atualizar tudo':'↓ Puxa para atualizar tudo';ptr.classList.toggle('ok',dy>LIM);}
     else ptr.style.display='none';},{passive:true});
   addEventListener('touchend',()=>{if(y0==null)return;ptr.style.display='none';y0=null;if(dy>LIM)puxou();});
   function puxou(){
     const av=document.getElementById('av');av.style.display='block';
-    if(!window.pedirPrecos){av.textContent='A ver se há dados novos…';verNovos().then(()=>{av.textContent='Sem dados novos por agora.';});return;}
-    let u=0;try{u=+sessionStorage.getItem('puxou')||0;}catch(e){}
-    if(Date.now()-u<180000){av.textContent='Atualização já pedida há pouco: os preços novos chegam dentro de 1-2 minutos (a página recarrega sozinha).';return;}
-    try{sessionStorage.setItem('puxou',Date.now());}catch(e){}
-    window.pedirPrecos();
+    if(!window.pedirTudo){av.textContent='A ver se há dados novos…';verNovos().then(()=>{av.textContent='Sem dados novos por agora.';});return;}
+    window.pedirTudo();
   }
 })();
 let aba='A';
