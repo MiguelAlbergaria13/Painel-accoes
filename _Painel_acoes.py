@@ -232,7 +232,8 @@ RAZOAVEL_SIGMAS = 1.0
 COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt", "det"),
         ("qtd", "Nº de ações detidas", 7, "qtd", "det"), ("pcompra", "Preço médio de compra (por ação)", 8, "preco", "det"),
         ("valor_eur", "Valor detido (€)", 8, "eur", "det"), ("lp_eur", "Lucro / prejuízo (€)", 8, "eur", "det"),
-        ("lp_pct", "Lucro / prejuízo (%)", 6, "pct", "det"), ("nome", "Empresa / ETF", 28, "txt", "id"),
+        ("lp_pct", "Lucro / prejuízo (%)", 6, "pct", "det"), ("corr", "Corretora", 8, "txt", "det"),
+        ("nome", "Empresa / ETF", 28, "txt", "id"),
         ("tipo", "Tipo", 5, "txt", "id"), ("codigo", "Código", 7, "txt", "id"),
         ("ticker", "Ticker Yahoo", 10, "txt", "id"), ("bolsa", "Bolsa", 18, "txt", "id"),
         ("moeda", "Moeda", 7, "txt", "id"),
@@ -321,7 +322,8 @@ OCULTAS = ("moeda_alt", "fx_alt", "desat")
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
          "div": 6, "div_alt": 6, "div_yield": 6, "payout": 6, "sinal": 14, "saude": 14, "lp_txt": 14}
 COLS = [(k, h, _LARG.get(k, w), f, g) for k, h, w, f, g in COLS]
-FONTE9 = {"qtd", "pcompra", "valor_eur", "lp_eur", "lp_pct", "preco_hora", "sinal", "saude", "lp_txt"}
+CORRETORAS = ["T212", "TRep", "T212+TRep"]
+FONTE9 = {"corr", "qtd", "pcompra", "valor_eur", "lp_eur", "lp_pct", "preco_hora", "sinal", "saude", "lp_txt"}
 SIMBOLO = {"EUR": "€", "USD": "$", "GBP": "£", "GBp": "p", "CHF": "CHF", "JPY": "¥", "DKK": "DKK", "SEK": "SEK",
            "NOK": "NOK", "CAD": "C$", "AUD": "A$", "HKD": "HK$", "ARS": "ARS", "BRL": "R$", "TWD": "NT$", "KRW": "₩",
            "CNY": "CN¥", "INR": "₹", "PLN": "zł", "ZAc": "ZAc", "ILA": "ILA", "MXN": "MX$", "SGD": "S$"}
@@ -520,7 +522,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V029", "16/11/2026"
+VERSAO, DATA_VERSAO = "V036", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -879,6 +881,13 @@ def aplicar_compra(d, qtd, pcompra):
             d["pcompra"] = pc
 
 
+def aplicar_corr(d, corr):
+    """Corretora guardada (T212 / TRep / T212+TRep), por ticker ou nome."""
+    chaves = [txt(d.get("ticker")).upper()] + ([] if modo_atual() == "todos" else [txt(d.get("nome"))])
+    if not txt(d.get("corr")):
+        d["corr"] = next((corr[k] for k in chaves if k in (corr or {})), None)
+
+
 def marca_detido(d, det, qtd):
     """O nº de ações (se o souber) ou x, para um título que tens; None se não o tens."""
     chaves = [txt(d.get("ticker")).upper()] + ([] if modo_atual() == "todos" else [txt(d.get("nome"))])
@@ -899,6 +908,7 @@ def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), est
         if not e_detido(d.get("det")):
             d["det"] = marca_detido(d, det, estado.get("qtd") or {})
         aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
+        aplicar_corr(d, estado.get("corr") or {})
         carteira(d)
     wb = Workbook()
     folha(wb.active, "Ações", "Painel de ações: nota global (sinal das médias, valor justo e analistas + qualidade e saúde financeira)",
@@ -987,7 +997,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                     "cada uma; as que faltam na folha Ações são lá acrescentadas); no máx. 2,5 com longo prazo fraco. ")
                 + ("" if ranking else "Os ETFs não têm preço-alvo nem valor justo (esses critérios deixam-nos no fim). ")
                 + "LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. "
-                + "▣ VER POSIÇÃO: janela com o valor de compra, o valor atual e o lucro/prejuízo da carteira. "
+                + "▣ VER POSIÇÃO: abre a janela com o valor de compra, o valor atual e o lucro/prejuízo da carteira. "
                 + f"Se os botões não responderem, corre uma vez o {os.path.basename(BAT)} (isso ativa-os neste PC).")
     ws["E2"].font = Font(italic=True, size=9, color="595959")
     ws["E2"].alignment = Alignment(vertical="center")
@@ -1005,6 +1015,11 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
         val0, sel0 = float(sel0.split("≥")[1]), SELECOES[2]
     campo("E3:F3", sel0)
     lista_val(C_SEL, SELECOES)
+    lc = get_column_letter(COL["corr"])                 # corretora: lista (em branco / T212 / TRep / T212+TRep)
+    dvc = DataValidation(type="list", formula1='"' + ",".join(CORRETORAS) + '"', allow_blank=True)
+    dvc.error, dvc.errorTitle = "Escolhe T212, TRep ou T212+TRep (ou deixa em branco).", "Corretora"
+    ws.add_data_validation(dvc)
+    dvc.add(f"{lc}{L0 + 1}:{lc}{L0 + MAX_LINHAS}")
     ws[C_SEL].font = Font(bold=True, size=9)
     ws[C_SEL_V] = val0
     ws[C_SEL_V].fill, ws[C_SEL_V].border = amarelo, borda
@@ -1094,7 +1109,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 c.alignment = Alignment(horizontal="center")
             if k in FONTE9:
                 c.font = Font(size=9, bold=bool(c.font and c.font.b))
-            if k == "qtd":
+            if k in ("qtd", "corr"):
                 c.alignment = Alignment(horizontal="center")
             if fmt == "preco":                  # o símbolo da moeda vem da formatação condicional (segue a linha)
                 c.number_format = "#,##0.00"
@@ -1245,7 +1260,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     # colunas sem uso nesta folha: na Ações, as dos ETFs; na ETFs, as que nenhum ETF preenche
     for j, (k, *_) in enumerate(COLS, start=1):
         vazia = all(not txt(d.get(k)) for d in linhas)
-        if k in OCULTAS or (ranking and k in SO_ETF) or (not ranking and vazia and k not in ("sel", "det", "nome", "ticker", "preco", "qtd", "pcompra",
+        if k in OCULTAS or (ranking and k in SO_ETF) or (not ranking and vazia and k not in ("sel", "det", "corr", "nome", "ticker", "preco", "qtd", "pcompra",
                                                                                     "valor_eur", "lp_eur", "lp_pct")):
             ws.column_dimensions[let(j)].hidden = True
     ws.freeze_panes = f"C{L0+1}"
@@ -1333,22 +1348,33 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
 
 def guardar_e_abrir(wb):
     filtros = ler_filtros()                         # os teus filtros (todas as folhas), para repor no livro novo
-    try:
-        wb.save(FICHEIRO)
-    except PermissionError:
-        try:   # o painel está aberto no Excel: fecha-o (sem guardar) e tenta outra vez
-            Excel(FICHEIRO).ops([{"op": "fechar"}])
-            time.sleep(1)
-            wb.save(FICHEIRO)
-        except Exception:
-            print(f"\nO {os.path.basename(FICHEIRO)} está aberto. Fecha-o no Excel e volta a correr a atualização.")
-            input("Carrega em Enter para sair...")
-            sys.exit(1)
+    tmp = os.path.join(os.path.dirname(FICHEIRO), BASE + "_novo.tmp")      # .tmp: o OneDrive não sincroniza
+    wb.save(tmp)                                    # primeiro numa cópia (o painel aberto não é tocado)
     if os.name == "nt":
+        try:                                        # painel aberto no Excel: guarda e fecha
+            Excel(FICHEIRO).ops([{"op": "fechar"}])
+        except Exception:
+            pass
+    for tent in range(30):                          # espera que o Excel / OneDrive larguem o ficheiro (até ~30 s)
+        try:
+            time.sleep(1 if tent else 2)
+            os.replace(tmp, FICHEIRO)
+            break
+        except PermissionError:
+            continue
+    else:
+        print(f"\nO {os.path.basename(FICHEIRO)} está aberto ou bloqueado. Fecha-o no Excel e volta a correr a atualização.")
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        input("Carrega em Enter para sair...")
+        sys.exit(1)
+    if os.name == "nt":
+        print("A dar tempo ao OneDrive para enviar o painel novo antes de o abrir...")
+        time.sleep(8)                               # abrir antes de o OneDrive acabar dava "conflito" / "outra cópia"
         os.startfile(FICHEIRO)
-        repor_filtros(filtros)
-        if QUADRO:
-            abrir_janela_posicao()
+        repor_filtros(filtros)          # a janela da posição fica preparada mas só abre com ▣ VER POSIÇÃO
 
 
 def registar_botao():
@@ -3022,8 +3048,9 @@ if (-not $wb) {
 }
 $res = New-Object System.Collections.ArrayList
 foreach ($o in $req.ops) {
+  if ($o.op -eq 'autosave') { try { $wb.AutoSaveOn = [bool]$o.valor } catch {}; [void]$res.Add($null); continue }
   if ($o.op -eq 'ativa') { [void]$res.Add([int]$wb.ActiveSheet.Index); continue }
-  if ($o.op -eq 'fechar') { $wb.Close($false); [void]$res.Add($null); break }
+  if ($o.op -eq 'fechar') { try { if (-not $wb.Saved) { $wb.Save() } } catch {}; $wb.Close($false); [void]$res.Add($null); break }
   if ($o.op -eq 'quadro' -or $o.op -eq 'fechar_quadro') {
     foreach ($sh in $wb.Worksheets) {
       $nomes = @(); foreach ($x in $sh.Shapes) { if ($x.Name -like 'Quadro*') { $nomes += $x.Name } }
@@ -3174,10 +3201,22 @@ def _ops_pywin32(livro, ops, guardar):
             return None
     res = []
     for o in ops:
+        if o["op"] == "autosave":            # Salvamento Automático (OneDrive) desligado / ligado
+            try:
+                wb.AutoSaveOn = bool(o["valor"])
+            except Exception:
+                pass
+            res.append(None)
+            continue
         if o["op"] == "ativa":
             res.append(int(wb.ActiveSheet.Index))
             continue
         if o["op"] == "fechar":
+            try:
+                if not wb.Saved:                 # guarda o que estiver por guardar, para a cópia local e a da nuvem
+                    wb.Save()                    # ficarem iguais antes de o script escrever o ficheiro novo
+            except Exception:
+                pass
             wb.Close(SaveChanges=False)
             return res + [None]
         if o["op"] in ("quadro", "fechar_quadro"):   # quadro flutuante da carteira (caixa de texto + botão ✕)
@@ -3369,7 +3408,9 @@ def repor_filtros(filtros, quadro=None, espera=45):
         time.sleep(3)
         for f in (_ops_pywin32, _ops_powershell):
             try:
-                r = f(livro, [{"op": "aplicar_filtros", "lista": filtros or []}, op_ocultos(1), op_ocultos(2)], True)
+                # sem gravar: o Salvamento Automático do Excel trata disso (gravar daqui ao mesmo tempo que o
+                # OneDrive envia o ficheiro dava "conflito de intercalação" / "outra cópia aberta")
+                r = f(livro, [{"op": "aplicar_filtros", "lista": filtros or []}, op_ocultos(1), op_ocultos(2)], False)
                 if r is not None and quadro:
                     try:
                         f(livro, [{"op": "quadro", "folhas": [1, 2], "texto": quadro,
@@ -3437,7 +3478,7 @@ def _ops_ficheiro(caminho, ops, guardar):
             res.append(wb.index(wb.active) + 1)
         elif o["op"] == "ler_filtros":
             res.append([])
-        elif o["op"] in ("quadro", "fechar_quadro"):
+        elif o["op"] in ("quadro", "fechar_quadro", "autosave"):
             res.append(None)
         elif o["op"] == "ocultos":
             ws, oc = folha(o["folha"]), []
@@ -3622,7 +3663,10 @@ def ler_estado():
                         estado.setdefault("linhas_ant", {})[idx] = [linha_lida(chaves, v) for v in linhas_t]
                     jq = cab.index("Nº de ações detidas") if "Nº de ações detidas" in cab else None
                     jp = cab.index("Preço médio de compra (por ação)") if "Preço médio de compra (por ação)" in cab else None
+                    jc = cab.index("Corretora") if "Corretora" in cab else None
                     for v in t[0][1:]:
+                        if jc is not None and txt(v[jc]) and txt(v[jt]):
+                            estado.setdefault("corr", {}).update({txt(v[jn]): txt(v[jc]), txt(v[jt]).upper(): txt(v[jc])})
                         qq = qtd_detida(v[jq]) if jq is not None else None
                         pp = qtd_detida(v[jp]) if jp is not None else None
                         if qq is not None:
@@ -3643,8 +3687,9 @@ def ler_estado():
                 estado["det"] |= ler_detidos()
                 estado["qtd"] = {**ler_qtd(), **estado.get("qtd", {})}
                 estado["pcompra"] = {**ler_qtd("pcompra"), **estado.get("pcompra", {})}
+                estado["corr"] = {**ler_qtd("corr"), **estado.get("corr", {})}
                 print("Aviso: não consegui ler os x de uma das folhas; mantenho também os detidos guardados.")
-            guardar_detidos(estado["det"], estado.get("qtd", {}), estado.get("pcompra", {}))
+            guardar_detidos(estado["det"], estado.get("qtd", {}), estado.get("pcompra", {}), estado.get("corr", {}))
             for idx, suf in ((1, ""), (2, "_e")):     # cada folha com a sua data de referência e a sua seleção
                 rr = tentar([{"op": "ler", "folha": idx, "rng": cel("ref")}, {"op": "ler", "folha": idx, "rng": cel("data")},
                              {"op": "ler", "folha": idx, "rng": cel("lp")}]
@@ -3702,13 +3747,14 @@ FICH_ACR = os.path.join(PASTA, BASE + "_acrescentados.json")
 FICH_DET = os.path.join(PASTA, BASE + "_detidos.json")
 
 
-def guardar_detidos(det, qtd=None, pcompra=None):
+def guardar_detidos(det, qtd=None, pcompra=None, corr=None):
     try:
         if os.path.exists(FICH_DET):                 # cópia do anterior (para recuperar se for preciso)
             shutil.copyfile(FICH_DET, FICH_DET.replace(".json", "_anterior.json"))
         with open(FICH_DET, "w", encoding="utf-8") as f:
             json.dump({"det": sorted(x for x in det if x), "qtd": {k: v for k, v in (qtd or {}).items() if k},
-                       "pcompra": {k: v for k, v in (pcompra or {}).items() if k}},
+                       "pcompra": {k: v for k, v in (pcompra or {}).items() if k},
+                       "corr": {k: v for k, v in (corr or {}).items() if k}},
                       f, ensure_ascii=False, indent=1)
     except Exception:
         pass
@@ -4142,7 +4188,7 @@ function cartao(d){
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cor(d.nt)}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
-  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.qn!=null?`<div class="pos"><div>Nº<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
@@ -4265,6 +4311,18 @@ def ficheiro_link_app():
     except Exception:
         pass
 FICH_GH = os.path.join(os.environ.get("APPDATA") or PASTA, "PainelAcoes", "github.json")
+# cópia na pasta do painel (OneDrive): qualquer PC que abra o painel encontra o token sem o pedir
+FICH_GH_PASTA = os.path.join(PASTA, BASE + "_github_config.json")
+
+
+def _gravar_cfg_gh(cfg):
+    for f in (FICH_GH, FICH_GH_PASTA):
+        try:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            with open(f, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh)
+        except Exception as e:
+            print(f"   aviso: não consegui guardar {f} ({e}).")
 PBKDF2_ITER = 200000
 PUB_TPL = r'''<!DOCTYPE html>
 <html lang="pt"><head><meta charset="utf-8">
@@ -4381,20 +4439,33 @@ document.getElementById('f').addEventListener('submit',async ev=>{
 
 
 def _ler_cfg_gh():
-    try:
-        with open(FICH_GH, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    """Configuração do GitHub: a deste PC ou, se não houver, a da pasta do painel (OneDrive)."""
+    for fich in (FICH_GH, FICH_GH_PASTA):
+        try:
+            with open(fich, encoding="utf-8") as f:
+                cfg = json.load(f)
+            if cfg.get("token") or cfg.get("desligado"):
+                return cfg
+        except Exception:
+            pass
+    return {}
 
 
 def _config_github():
     """Lê (ou pergunta, na 1.ª vez) o token e a palavra-passe. None se a publicação estiver desligada."""
-    try:
-        with open(FICH_GH, encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception:
-        cfg = {}
+    cfg = _ler_cfg_gh()
+    if cfg.get("token") and cfg.get("senha"):           # garante as duas cópias (este PC e a pasta do OneDrive)
+        for fich in (FICH_GH_PASTA, FICH_GH):
+            if not os.path.exists(fich):
+                try:
+                    os.makedirs(os.path.dirname(fich), exist_ok=True)
+                    with open(fich, "w", encoding="utf-8") as f:
+                        json.dump(cfg, f)
+                    if fich == FICH_GH_PASTA:
+                        print(f"   Token guardado também na pasta do painel ({os.path.basename(fich)}): os outros PCs já "
+                              "não o pedem.")
+                except Exception:
+                    pass
     # alternativa à janela preta: ficheiro _Painel_github.txt na pasta do painel, com o token na 1.ª linha e a
     # palavra-passe na 2.ª; o script guarda-os fora do OneDrive e apaga o ficheiro
     ftxt = os.path.join(PASTA, BASE + "_github.txt")
@@ -4406,11 +4477,10 @@ def _config_github():
                 cfg = {"user": GH_USER, "repo": GH_REPO, "token": ls[0], "senha": ls[1]}
                 if len(ls) >= 3:
                     cfg["token_botao"] = ls[2]
-                os.makedirs(os.path.dirname(FICH_GH), exist_ok=True)
-                with open(FICH_GH, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f)
+                _gravar_cfg_gh(cfg)
                 os.remove(ftxt)
-                print(f"Token e palavra-passe lidos de {os.path.basename(ftxt)} (guardados neste PC; o ficheiro foi apagado).")
+                print(f"Token e palavra-passe lidos de {os.path.basename(ftxt)} (guardados neste PC e na pasta do painel, "
+                      f"em {os.path.basename(FICH_GH_PASTA)}; o ficheiro de texto foi apagado).")
                 return cfg
             print(f"   aviso: {os.path.basename(ftxt)} precisa do token na 1.ª linha e da palavra-passe "
                   "(mín. 8 caracteres) na 2.ª.")
@@ -4420,29 +4490,12 @@ def _config_github():
         return None
     if cfg.get("token") and cfg.get("senha"):
         return cfg
-    if not sys.stdin or not sys.stdin.isatty():
-        return None
-    import getpass
-    print("\n=== Publicar a página do telemóvel em " + GH_URL + " ===")
-    print("Cola o token do GitHub (github_pat_... ou ghp_...): Ctrl+V ou botão direito do rato, e depois Enter.")
-    print(f"(Se não conseguir colar: Enter vazio, e cria o ficheiro {BASE}_github.txt na pasta do painel com o token")
-    print(" na 1.ª linha e a palavra-passe na 2.ª; na atualização seguinte o script lê-o e apaga-o.)")
-    tok = input("Token: ").strip()
-    if not tok:
-        print(f"   Sem token: não publico desta vez (cria {BASE}_github.txt ou volta a atualizar para colar).")
-        return None
-    else:
-        while True:
-            s1 = getpass.getpass("Palavra-passe para abrir a página (mín. 8 caracteres): ")
-            s2 = getpass.getpass("Repete a palavra-passe: ")
-            if len(s1) >= 8 and s1 == s2:
-                break
-            print("   Não coincidem ou têm menos de 8 caracteres; outra vez.")
-        cfg = {"user": GH_USER, "repo": GH_REPO, "token": tok, "senha": s1}
-    os.makedirs(os.path.dirname(FICH_GH), exist_ok=True)
-    with open(FICH_GH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f)
-    return cfg
+    # sem configuração neste PC: não pára a atualização a pedir o token; só avisa
+    print(f"\n   AVISO: este PC não tem o token do GitHub guardado ({FICH_GH}), por isso a app do telemóvel não foi "
+          "atualizada desta vez.")
+    print(f"   Para resolver: cria na pasta do painel o ficheiro {BASE}_github.txt com 3 linhas (token de Contents, "
+          "palavra-passe da app, token do botão ↻); no ▶ ATUALIZAR seguinte o script guarda-os e apaga o ficheiro.")
+    return None
 
 
 def _cifrar(texto, senha):
@@ -4592,7 +4645,7 @@ def publicar_github(html, versao=""):
     except urllib.error.HTTPError as e:
         msg = {401: "token inválido ou expirado", 403: "o token não tem permissão de escrita neste repositório",
                404: "repositório não encontrado (nome ou acesso do token)"}.get(e.code, f"erro {e.code}")
-        print(f"   aviso: não publiquei no GitHub ({msg}). Para mudar o token, apaga {FICH_GH} e atualiza outra vez.")
+        print(f"   aviso: não publiquei no GitHub ({msg}). Para mudar o token, cria {BASE}_github.txt na pasta do painel (3 linhas: token, palavra-passe, token do botão) e atualiza outra vez.")
         registo(f"GitHub: {msg}")
     except Exception as e:
         print(f"   aviso: não publiquei no GitHub ({e}).")
@@ -4600,7 +4653,7 @@ def publicar_github(html, versao=""):
 
 
 BOTAO = None          # {"o": utilizador, "r": repositório, "t": token só de Actions} -> botão ↻ na página
-FICH_SYNC = os.path.join(os.path.dirname(FICH_GH), "definicoes.json")
+FICH_SYNC = os.path.join(PASTA, BASE + "_definicoes_app.json")
 
 
 def sync_dos_precos(linhas, etfs):
@@ -4611,7 +4664,7 @@ def sync_dos_precos(linhas, etfs):
             base = json.load(f)
     except Exception:
         return
-    det, qtd, pc = set(), {}, {}
+    det, qtd, pc, co = set(), {}, {}, {}
     for d in list(linhas) + list(etfs):
         ks = [k for k in (txt(d.get("nome")), txt(d.get("ticker")).upper()) if k]
         q = d.get("qtd") if isinstance(d.get("qtd"), (int, float)) else qtd_detida(d.get("det"))
@@ -4621,8 +4674,10 @@ def sync_dos_precos(linhas, etfs):
             qtd.update({k: q for k in ks})
         if isinstance(d.get("pcompra"), (int, float)):
             pc.update({k: d["pcompra"] for k in ks})
+        if txt(d.get("corr")):
+            co.update({k: txt(d["corr"]) for k in ks})
     SYNC.clear()
-    SYNC.update(base, det=sorted(det), qtd=qtd, pcompra=pc)
+    SYNC.update(base, det=sorted(det), qtd=qtd, pcompra=pc, corr=co)
 
 
 SYNC = {}             # definições do PC para o servidor (acrescentados, x, modo, longo prazo mínimo, ações dos ETFs)
@@ -4643,7 +4698,7 @@ def pagina_html(linhas, etfs, texto):
         return {"n": txt(d.get("nome")), "c": txt(d.get("codigo")), "t": txt(d.get("ticker")), "m": txt(d.get("moeda")),
                 "p": num(d.get("preco")), "nt": num(d.get("nota")), "dc": txt(d.get("decisao")), "pt": num(d.get("pont")),
                 "x": e_detido(d.get("det")), "vd": valor_detido(d), "qn": num(d.get("qtd")) or qtd_detida(d.get("det")),
-                "pc": num(d.get("pcompra")), "le": num(d.get("lp_eur")), "lpp": num(d.get("lp_pct")),
+                "br": txt(d.get("corr")) or None, "pc": num(d.get("pcompra")), "le": num(d.get("lp_eur")), "lpp": num(d.get("lp_pct")),
                 "ce": ((d["valor_eur"] - d["lp_eur"]) if isinstance(d.get("valor_eur"), (int, float))
                        and isinstance(d.get("lp_eur"), (int, float)) else None),
                 "ds": 1 if d.get("desat") == 1 else 0,
@@ -5420,8 +5475,9 @@ def atualizar_servidor(tipo):
         linhas, etfs = dd["a"], dd["e"]
         for d in linhas + etfs:
             d["det"] = marca_detido(d, set(cfg.get("det", [])), cfg.get("qtd", {}))
-            d["qtd"] = d["pcompra"] = None
+            d["qtd"] = d["pcompra"] = d["corr"] = None
             aplicar_compra(d, cfg.get("qtd", {}), cfg.get("pcompra", {}))
+            aplicar_corr(d, cfg.get("corr", {}))
         tickers = sorted({txt(d["ticker"]) for d in linhas + etfs if txt(d.get("ticker"))})
         precos = precos_agora(tickers)
         for d in linhas + etfs:
@@ -5547,7 +5603,7 @@ def atualizar_tudo(so=None, servidor=None):
             acrescentados = [tuple(a) for a in servidor.get("acrescentados", [])]
             estado = {"det": set(servidor.get("det", [])), "qtd": servidor.get("qtd", {}),
                       "universo": set(servidor.get("universo", [])), "linhas_ant": servidor.get("_ant", {}),
-                      "pcompra": servidor.get("pcompra", {}),
+                      "pcompra": servidor.get("pcompra", {}), "corr": servidor.get("corr", {}),
                       "lp_min": servidor.get("lp_min", LP_MIN), "ref_escolha": "Atual"}
         else:
             criterios, acrescentados, estado = ler_estado()
@@ -5557,6 +5613,7 @@ def atualizar_tudo(so=None, servidor=None):
             estado["det"] = ler_detidos()
             estado["qtd"] = ler_qtd()
             estado["pcompra"] = ler_qtd("pcompra")
+            estado["corr"] = ler_qtd("corr")
         # cada folha com a sua data de referência
         REF_A = data_ref(estado.get("ref_escolha"), estado.get("ref_data"))
         REF_E = data_ref(estado.get("ref_escolha_e", estado.get("ref_escolha")),
@@ -5685,8 +5742,9 @@ def atualizar_tudo(so=None, servidor=None):
         if servidor is not None:                # no GitHub: só os dados (a página é feita por atualizar_servidor)
             for d in list(linhas) + list(etfs):
                 d["det"] = marca_detido(d, estado.get("det") or set(), estado.get("qtd") or {})
-                d["qtd"] = d["pcompra"] = None
+                d["qtd"] = d["pcompra"] = d["corr"] = None
                 aplicar_compra(d, estado.get("qtd") or {}, estado.get("pcompra") or {})
+                aplicar_corr(d, estado.get("corr") or {})
             return linhas, etfs, texto
         global QUADRO
         QUADRO = dados_posicao(linhas, etfs)
@@ -5695,7 +5753,7 @@ def atualizar_tudo(so=None, servidor=None):
                  for k in (txt(d.get("nome")), txt(d.get("ticker")).upper())}
         SYNC.update(universo=sorted(estado.get("universo") or []), assinalados=sorted(assin))
         SYNC.update(acrescentados=[list(a) for a in acrescentados], det=sorted(x for x in (estado.get("det") or set()) if x),
-                    qtd=estado.get("qtd", {}), pcompra=estado.get("pcompra", {}),
+                    qtd=estado.get("qtd", {}), pcompra=estado.get("pcompra", {}), corr=estado.get("corr", {}),
                     modo=modo_atual(), lp_min=LP_MIN, dos_etfs=_ler_json(FICH_ACOES_ETF, []))
         wb = construir(linhas, texto, etfs, criterios, acrescentados, estado)
         OCULTOS.clear()
