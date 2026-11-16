@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V026", "16/11/2026"
+VERSAO, DATA_VERSAO = "V027", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3952,6 +3952,10 @@ HTML_TPL = r'''<!DOCTYPE html>
 @media (prefers-color-scheme:dark){:root{--bg:#121417;--card:#1d2024;--tx:#e8eaed;--mu:#9aa0a6;--li:#30343a;--ac:#8ab4f8}}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);font-size:15px}
+html,body{overscroll-behavior-y:contain}
+#ptr{display:none;position:fixed;top:6px;left:50%;transform:translate(-50%,0);z-index:30;background:var(--card);color:var(--tx);
+  border:1px solid var(--li);border-radius:18px;padding:7px 14px;font-size:13px;font-weight:600;box-shadow:0 3px 12px rgba(0,0,0,.2)}
+#ptr.ok{background:var(--ac);color:#fff}
 header{position:sticky;top:0;z-index:5;background:var(--ac);color:#fff;padding:10px 12px 8px}
 @media (prefers-color-scheme:dark){header{background:#1f3b57}}
 h1{font-size:17px;margin:0 0 2px;font-weight:600}
@@ -4047,6 +4051,7 @@ if(D.gh&&D.gh.t){
     if(!(v>=0&&v<=5)){av.style.display='block';av.textContent='Escreve uma nota global de 0 a 5.';return;}
     pedir({dataset:{a:'ng:'+v}});ng.value='';};
   mn.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>pedir(b));
+  window.pedirPrecos=()=>pedir({dataset:{a:'precos'}});
   async function pedir(b){
     mn.style.display='none';av.style.display='block';av.textContent='A pedir a atualização…';
     try{
@@ -4063,6 +4068,26 @@ if(D.gh&&D.gh.t){
     }catch(e){av.textContent='Não foi possível pedir a atualização ('+e.message+').';}
   }
 }
+// puxar para baixo no topo da lista: pede uma atualização dos preços (sem o token: só vai ver se há dados novos)
+(()=>{
+  const ptr=document.createElement('div');ptr.id='ptr';document.body.appendChild(ptr);
+  let y0=null,dy=0;const LIM=90;
+  addEventListener('touchstart',e=>{const qd=document.getElementById('qd');
+    y0=(scrollY<=0&&qd.style.display!=='block'&&e.touches.length===1)?e.touches[0].clientY:null;dy=0;},{passive:true});
+  addEventListener('touchmove',e=>{if(y0==null)return;dy=e.touches[0].clientY-y0;
+    if(dy>12){ptr.style.display='block';ptr.style.transform=`translate(-50%,${Math.min(dy,140)/2}px)`;
+      ptr.textContent=dy>LIM?'↻ Solta para atualizar':'↓ Puxa para atualizar';ptr.classList.toggle('ok',dy>LIM);}
+    else ptr.style.display='none';},{passive:true});
+  addEventListener('touchend',()=>{if(y0==null)return;ptr.style.display='none';y0=null;if(dy>LIM)puxou();});
+  function puxou(){
+    const av=document.getElementById('av');av.style.display='block';
+    if(!window.pedirPrecos){av.textContent='A ver se há dados novos…';verNovos().then(()=>{av.textContent='Sem dados novos por agora.';});return;}
+    let u=0;try{u=+sessionStorage.getItem('puxou')||0;}catch(e){}
+    if(Date.now()-u<180000){av.textContent='Atualização já pedida há pouco: os preços novos chegam dentro de 1-2 minutos (a página recarrega sozinha).';return;}
+    try{sessionStorage.setItem('puxou',Date.now());}catch(e){}
+    window.pedirPrecos();
+  }
+})();
 let aba='A';
 const cor=v=>v==null?'#d0d3d8':v>=4.5?'#63BE7B':v>=3.75?'#A9D18E':v>=2.75?'#E2EFDA':v>=2.25?'#F4B183':v>=1.5?'#FFEB9C':'#F8696B';
 const num=(v,c)=>v==null?'–':v.toLocaleString('pt-PT',{minimumFractionDigits:c,maximumFractionDigits:c});
