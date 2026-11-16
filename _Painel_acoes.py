@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V024", "16/11/2026"
+VERSAO, DATA_VERSAO = "V025", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3988,6 +3988,10 @@ main{padding:8px 10px 40px}
 .pos div{background:#fff8e1;border-radius:8px;padding:5px 8px;font-size:11px;color:var(--mu)}
 @media (prefers-color-scheme:dark){.pos div{background:#3a3220}}
 .pos b{display:block;font-size:13px;color:var(--tx)}
+.gr{background:var(--card);border:1px solid var(--li);border-radius:12px;margin:10px 0;padding:10px 12px;text-align:center}
+.gr h3{font-size:14px;margin:2px 0 6px;text-align:left}
+.lg{display:flex;align-items:center;gap:8px;font-size:12px;text-align:left;padding:2px 0}
+.lg i{width:11px;height:11px;border-radius:3px;flex:none}.lg span{flex:1}.lg b{font-weight:600}
 @media (max-width:420px){.pos{grid-template-columns:1fr 1fr}}
 .card.ds{background:#fde7ea}
 @media (prefers-color-scheme:dark){.card.ds{background:#3b2228}}
@@ -4003,7 +4007,7 @@ main{padding:8px 10px 40px}
 <div id="mn" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap"><button class="tab" data-a="precos">Preços</button><button class="tab" data-a="completa">Tudo</button><button class="tab" data-a="assinalados">Assinalados</button><input id="ng" class="tab" type="number" min="0" max="5" step="0.1" placeholder="NG ≥" style="width:70px"><button class="tab" id="ngok">OK</button></div>
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
-<div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button></div>
+<div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="G">Gráficos</button></div>
 <div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
 <option value="nt">Nota global</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
 </header>
@@ -4091,6 +4095,47 @@ function cartao(d){
   if(d.no) h+=`<p><i>Notas:</i> ${esc(d.no)}</p>`;
   return h+'</div></div>';
 }
+// ---- separador Gráficos (os mesmos da folha Carteira), em SVG
+const CORES=['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac','#1f77b4','#8c564b'];
+const escH=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function tarte(itens,titulo){
+  const tot=itens.reduce((s,x)=>s+x.v,0);if(!tot)return '';
+  const R=90,r=52,cx=110,cy=110;let a0=-Math.PI/2,arcos='';
+  itens.forEach((x,i)=>{const a1=a0+2*Math.PI*x.v/tot,g=a1-a0>Math.PI?1:0,cor=x.cor||CORES[i%CORES.length];
+    const P=(a,rr)=>`${(cx+rr*Math.cos(a)).toFixed(2)} ${(cy+rr*Math.sin(a)).toFixed(2)}`;
+    arcos+=itens.length===1?`<circle cx="${cx}" cy="${cy}" r="${(R+r)/2}" fill="none" stroke="${cor}" stroke-width="${R-r}"/>`:
+      `<path d="M${P(a0,R)} A${R} ${R} 0 ${g} 1 ${P(a1,R)} L${P(a1,r)} A${r} ${r} 0 ${g} 0 ${P(a0,r)}Z" fill="${cor}" stroke="var(--card)" stroke-width="1.5"/>`;
+    a0=a1;});
+  const leg=itens.map((x,i)=>`<div class="lg"><i style="background:${x.cor||CORES[i%CORES.length]}"></i><span>${escH(x.n)}</span><b>${eur(x.v)} (${num(x.v/tot*100,1)}%)</b></div>`).join('');
+  return `<section class="gr"><h3>${titulo}</h3><svg viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="${escH(titulo)}">${arcos}
+    <text x="110" y="106" text-anchor="middle" font-size="11" fill="var(--mu)">total</text><text x="110" y="124" text-anchor="middle" font-size="14" font-weight="700" fill="var(--tx)">${eur(tot)}</text></svg>${leg}</section>`;
+}
+function barras(t){
+  if(!t.length)return '';
+  const mx=Math.max(...t.map(x=>Math.max(x.c,x.a)))*1.08,W=360,L=118,Rm=8,h=26,top=34,H=top+t.length*h+30,esc_=v=>L+(W-L-Rm)*v/mx;
+  const passo=(()=>{const b=Math.pow(10,Math.floor(Math.log10(mx/4)));return [1,2,5,10].map(k=>k*b).find(k=>mx/k<=5);})();
+  let g='';for(let v=0;v<=mx;v+=passo){const x=esc_(v);g+=`<line x1="${x}" y1="${top-4}" x2="${x}" y2="${H-30}" stroke="var(--li)"/><text x="${x}" y="${top-8}" text-anchor="middle" font-size="9" fill="var(--mu)">${v>=1000?num(v/1000,v%1000?1:0)+' mil':num(v,0)}</text>`;}
+  t.forEach((x,i)=>{const y=top+i*h,base=Math.min(x.c,x.a),l=x.a-x.c,cor=l>=0?'#1e8e3e':'#d93025';
+    g+=`<text x="${L-6}" y="${y+h/2+4}" text-anchor="end" font-size="10" fill="var(--tx)">${escH(x.n.length>18?x.n.slice(0,17)+'…':x.n)}</text>
+      <rect x="${L}" y="${y+5}" width="${(esc_(base)-L).toFixed(1)}" height="${h-10}" fill="#9aa0a6"/>
+      <rect x="${esc_(base).toFixed(1)}" y="${y+5}" width="${(esc_(Math.max(x.c,x.a))-esc_(base)).toFixed(1)}" height="${h-10}" fill="${cor}"/>
+      <text x="${(esc_(Math.max(x.c,x.a))+3).toFixed(1)}" y="${y+h/2+4}" font-size="9" fill="${cor}" font-weight="700">${x.c?pct2(l/x.c):''}</text>`;});
+  g+=`<text x="${L+(W-L)/2}" y="12" text-anchor="middle" font-size="10" font-weight="700" fill="var(--mu)">Valor (€)</text>
+    <text x="10" y="${top+t.length*h/2}" font-size="10" font-weight="700" fill="var(--mu)" transform="rotate(-90 10 ${top+t.length*h/2})" text-anchor="middle">Título</text>
+    <g font-size="10" fill="var(--tx)"><rect x="${L}" y="${H-18}" width="10" height="10" fill="#9aa0a6"/><text x="${L+14}" y="${H-9}">Compra</text>
+    <rect x="${L+70}" y="${H-18}" width="10" height="10" fill="#1e8e3e"/><text x="${L+84}" y="${H-9}">Lucro</text>
+    <rect x="${L+130}" y="${H-18}" width="10" height="10" fill="#d93025"/><text x="${L+144}" y="${H-9}">Prejuízo</text></g>`;
+  return `<section class="gr"><h3>Cada título: valor de compra, + lucro (verde) / − prejuízo (vermelho)</h3><svg viewBox="0 0 ${W+40} ${H}" width="100%" role="img" aria-label="Lucro e prejuízo por título">${g}</svg></section>`;
+}
+function graficos(){
+  const t=D.a.map(d=>({...d,tp:'Ação'})).concat(D.e.map(d=>({...d,tp:'ETF'}))).filter(d=>d.ce!=null&&d.vd!=null)
+    .map(d=>({n:d.n,c:d.ce,a:d.vd,tp:d.tp})).sort((x,y)=>y.c-x.c);
+  if(!t.length)return '<p class="vazio">Escreve o nº de ações e o preço médio de compra nas folhas Ações / ETFs para ver os gráficos.</p>';
+  const ca=t.filter(x=>x.tp==='Ação').reduce((s,x)=>s+x.c,0), ce=t.filter(x=>x.tp==='ETF').reduce((s,x)=>s+x.c,0);
+  return tarte(t.map(x=>({n:x.n,v:x.c})),'Carteira por valor de compra (€ e %)')
+    +tarte([{n:'Ações',v:ca,cor:'#4e79a7'},{n:'ETFs',v:ce,cor:'#f28e2b'}].filter(x=>x.v),'Ações vs ETFs (valor de compra)')
+    +barras(t);
+}
 function mostrar(){
   const q=document.getElementById('q').value.trim().toLowerCase(), o=document.getElementById('o').value;
   const prep=l=>{if(q) l=l.filter(d=>(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q));
@@ -4101,6 +4146,8 @@ function mostrar(){
     return ' · '+eur(v.reduce((s,d)=>s+d.vd,0))+(l.some(d=>d.le!=null)?` · <span style="color:${lp>=0?'#1e8e3e':'#d93025'}">${lp>=0?'+':'−'}${eur(Math.abs(lp))}${ce?' ('+pct2(lp/ce)+')':''}</span>`:'');};
   const el=document.getElementById('lst');
   let h='';
+  document.querySelector('.bar').style.display=aba==='G'?'none':'flex';
+  if(aba==='G'){el.innerHTML=graficos();return;}
   if(aba==='X'){
     const a=prep(D.a.filter(d=>d.x)), e=prep(D.e.filter(d=>d.x));
     const ta=D.a.concat(D.e).filter(d=>d.x&&d.vd!=null);
@@ -4111,8 +4158,8 @@ function mostrar(){
   el.innerHTML=h||'<p class="vazio">Nada a mostrar.</p>';
   el.querySelectorAll('.card').forEach(c=>c.addEventListener('click',()=>c.classList.toggle('open')));
 }
-document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
+document.querySelectorAll('.tabs .tab').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tabs .tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
 document.getElementById('q').addEventListener('input',mostrar);
 document.getElementById('o').addEventListener('change',mostrar);
 mostrar();
