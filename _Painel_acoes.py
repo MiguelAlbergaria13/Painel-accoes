@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V027", "16/11/2026"
+VERSAO, DATA_VERSAO = "V028", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -687,6 +687,38 @@ def folha_carteira(wb, linhas, etfs):
     b.legend.position = "b"
     b.width, b.height = max(18, min(40, 1.4 * n)), 11
     ws.add_chart(b, "K45")
+    # lucros (verdes) e prejuízos (vermelhos): cada fatia = o lucro ou o prejuízo de um título, em valor absoluto
+    from openpyxl.chart.series import DataPoint
+    lp = sorted([x for x in dados if x[4] > 0], key=lambda x: -x[4]) + sorted([x for x in dados if x[4] < 0], key=lambda x: x[4])
+    if lp:
+        r1 = r0 + 6
+        ws.cell(r1, 1, "Lucros e prejuízos (gráfico circular)").font = Font(bold=True)
+        ws.cell(r1 + 1, 1, "Título").font = ws.cell(r1 + 1, 3, "Lucro / prejuízo (€)").font = Font(bold=True)
+        ws.cell(r1 + 1, 4, "Tamanho da fatia (€)").font = Font(bold=True)
+        for i, (nome, _, c, a, l) in enumerate(lp, r1 + 2):
+            ws.cell(i, 1, f"{nome} ({'+' if l >= 0 else '−'})")
+            ws.cell(i, 3, round(l, 2)).number_format = '+"€" #,##0.00;-"€" #,##0.00'
+            ws.cell(i, 3).font = Font(bold=True, color="00A050" if l >= 0 else "C00000")
+            ws.cell(i, 4, round(abs(l), 2)).number_format = '"€" #,##0.00'
+        p3 = PieChart()
+        p3.title = "Lucros (verde) e prejuízos (vermelho) por título"
+        p3.add_data(Reference(ws, min_col=4, min_row=r1 + 2, max_row=r1 + 1 + len(lp)), titles_from_data=False)
+        p3.set_categories(Reference(ws, min_col=1, min_row=r1 + 2, max_row=r1 + 1 + len(lp)))
+        VERDES = ["1E8E3E", "34A853", "5BB974", "81C995", "0D652D", "A8DAB5"]
+        VERMELHOS = ["D93025", "EA4335", "EE675C", "F28B82", "A50E0E", "F6AEA9"]
+        ig = iv = 0
+        for k, x in enumerate(lp):
+            pt = DataPoint(idx=k)
+            if x[4] >= 0:
+                cor, ig = VERDES[ig % len(VERDES)], ig + 1
+            else:
+                cor, iv = VERMELHOS[iv % len(VERMELHOS)], iv + 1
+            pt.graphicalProperties.solidFill = cor
+            pt.graphicalProperties.line.solidFill = "FFFFFF"
+            p3.series[0].dPt.append(pt)
+        p3.dataLabels = rotulos()
+        p3.width, p3.height = 16, 11
+        ws.add_chart(p3, "X3")
 
 
 QUADRO = None         # dados da janela da posição (depois de cada ▶ ATUALIZAR)
@@ -4123,17 +4155,18 @@ function cartao(d){
 // ---- separador Gráficos (os mesmos da folha Carteira), em SVG
 const CORES=['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac','#1f77b4','#8c564b'];
 const escH=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function tarte(itens,titulo){
+function tarte(itens,titulo,lp){
   const tot=itens.reduce((s,x)=>s+x.v,0);if(!tot)return '';
+  const liq=lp?itens.reduce((s,x)=>s+x.s*x.v,0):0;
   const R=90,r=52,cx=110,cy=110;let a0=-Math.PI/2,arcos='';
   itens.forEach((x,i)=>{const a1=a0+2*Math.PI*x.v/tot,g=a1-a0>Math.PI?1:0,cor=x.cor||CORES[i%CORES.length];
     const P=(a,rr)=>`${(cx+rr*Math.cos(a)).toFixed(2)} ${(cy+rr*Math.sin(a)).toFixed(2)}`;
     arcos+=itens.length===1?`<circle cx="${cx}" cy="${cy}" r="${(R+r)/2}" fill="none" stroke="${cor}" stroke-width="${R-r}"/>`:
       `<path d="M${P(a0,R)} A${R} ${R} 0 ${g} 1 ${P(a1,R)} L${P(a1,r)} A${r} ${r} 0 ${g} 0 ${P(a0,r)}Z" fill="${cor}" stroke="var(--card)" stroke-width="1.5"/>`;
     a0=a1;});
-  const leg=itens.map((x,i)=>`<div class="lg"><i style="background:${x.cor||CORES[i%CORES.length]}"></i><span>${escH(x.n)}</span><b>${eur(x.v)} (${num(x.v/tot*100,1)}%)</b></div>`).join('');
+  const leg=itens.map((x,i)=>`<div class="lg"><i style="background:${x.cor||CORES[i%CORES.length]}"></i><span>${escH(x.n)}</span><b${lp?` style="color:${x.s>0?'#1e8e3e':'#d93025'}"`:''}>${lp?(x.s>0?'+':'−'):''}${eur(x.v)} (${num(x.v/tot*100,1)}%)</b></div>`).join('');
   return `<section class="gr"><h3>${titulo}</h3><svg viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="${escH(titulo)}">${arcos}
-    <text x="110" y="106" text-anchor="middle" font-size="11" fill="var(--mu)">total</text><text x="110" y="124" text-anchor="middle" font-size="14" font-weight="700" fill="var(--tx)">${eur(tot)}</text></svg>${leg}</section>`;
+    <text x="110" y="106" text-anchor="middle" font-size="11" fill="var(--mu)">${lp?'saldo':'total'}</text><text x="110" y="124" text-anchor="middle" font-size="14" font-weight="700" fill="${lp?(liq>=0?'#1e8e3e':'#d93025'):'var(--tx)'}">${lp?(liq>=0?'+':'−'):''}${eur(lp?Math.abs(liq):tot)}</text></svg>${leg}</section>`;
 }
 function barras(t){
   if(!t.length)return '';
@@ -4159,7 +4192,13 @@ function graficos(){
   const ca=t.filter(x=>x.tp==='Ação').reduce((s,x)=>s+x.c,0), ce=t.filter(x=>x.tp==='ETF').reduce((s,x)=>s+x.c,0);
   return tarte(t.map(x=>({n:x.n,v:x.c})),'Carteira por valor de compra (€ e %)')
     +tarte([{n:'Ações',v:ca,cor:'#4e79a7'},{n:'ETFs',v:ce,cor:'#f28e2b'}].filter(x=>x.v),'Ações vs ETFs (valor de compra)')
+    +tarte(lucros(t),'Lucros (verde) e prejuízos (vermelho) por título',true)
     +barras(t);
+}
+function lucros(t){
+  const VD=['#1e8e3e','#34a853','#5bb974','#81c995','#0d652d','#a8dab5'],VM=['#d93025','#ea4335','#ee675c','#f28b82','#a50e0e','#f6aea9'];
+  const g=t.filter(x=>x.a>x.c).sort((x,y)=>(y.a-y.c)-(x.a-x.c)), p=t.filter(x=>x.a<x.c).sort((x,y)=>(x.a-x.c)-(y.a-y.c));
+  return g.map((x,i)=>({n:x.n,v:x.a-x.c,s:1,cor:VD[i%VD.length]})).concat(p.map((x,i)=>({n:x.n,v:x.c-x.a,s:-1,cor:VM[i%VM.length]})));
 }
 function mostrar(){
   const q=document.getElementById('q').value.trim().toLowerCase(), o=document.getElementById('o').value;
