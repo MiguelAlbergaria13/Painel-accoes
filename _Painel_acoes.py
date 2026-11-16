@@ -317,7 +317,7 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat")
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr")   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
          "div": 6, "div_alt": 6, "div_yield": 6, "payout": 6, "sinal": 14, "saude": 14, "lp_txt": 14}
@@ -522,7 +522,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V036", "16/11/2026"
+VERSAO, DATA_VERSAO = "V038", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1371,8 +1371,6 @@ def guardar_e_abrir(wb):
         input("Carrega em Enter para sair...")
         sys.exit(1)
     if os.name == "nt":
-        print("A dar tempo ao OneDrive para enviar o painel novo antes de o abrir...")
-        time.sleep(8)                               # abrir antes de o OneDrive acabar dava "conflito" / "outra cópia"
         os.startfile(FICHEIRO)
         repor_filtros(filtros)          # a janela da posição fica preparada mas só abre com ▣ VER POSIÇÃO
 
