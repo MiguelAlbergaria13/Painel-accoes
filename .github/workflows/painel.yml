@@ -1,0 +1,79 @@
+name: painel
+
+on:
+  schedule:
+    # hora UTC (= Lisboa no inverno; no verão é mais 1 hora em Lisboa)
+    - cron: '30 7 * * 1-5'            # completa antes da abertura europeia
+    - cron: '0 14 * * 1-5'            # completa antes da abertura americana
+    - cron: '15 22 * * 1-5'           # completa depois do fecho americano
+    - cron: '5,20,35,50 8-21 * * 1-5' # só preços, de 15 em 15 minutos
+  workflow_dispatch:
+    inputs:
+      tipo:
+        description: 'completa ou precos'
+        required: false
+        default: 'precos'
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: painel
+  cancel-in-progress: false
+
+jobs:
+  painel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recuperar dados e caches da última atualização (ramo gh-pages)
+        run: |
+          if git fetch -q origin gh-pages 2>/dev/null; then
+            for f in dados.enc _Painel_acoes_bolsas.json _Painel_acoes_composicao_etfs.json _Painel_acoes_acoes_dos_etfs.json; do
+              git show "FETCH_HEAD:$f" > "$f" 2>/dev/null || rm -f "$f"
+            done
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar
+        run: pip install -q yfinance openpyxl cryptography pandas numpy
+
+      - name: Atualizar
+        env:
+          PAINEL_SENHA: ${{ secrets.PAINEL_SENHA }}
+        run: |
+          TIPO="${{ github.event.inputs.tipo }}"
+          if [ -z "$TIPO" ]; then
+            case "${{ github.event.schedule }}" in
+              "5,20,35,50 8-21 * * 1-5") TIPO=precos ;;
+              *) TIPO=completa ;;
+            esac
+          fi
+          python _Painel_acoes.py --servidor "$TIPO"
+
+      - name: Publicar no ramo gh-pages (sem histórico, para o repositório não crescer)
+        run: |
+          mkdir -p /tmp/pub
+          for f in index.html versao.txt dados.enc _Painel_acoes_bolsas.json _Painel_acoes_composicao_etfs.json _Painel_acoes_acoes_dos_etfs.json; do
+            [ -f "$f" ] && cp "$f" /tmp/pub/
+          done
+          touch /tmp/pub/.nojekyll
+          cd /tmp/pub
+          git init -q -b gh-pages
+          git config user.name "painel-bot"
+          git config user.email "painel-bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "painel $(date -u +'%d/%m/%Y %H:%M') UTC"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages:gh-pages
+
+      - name: Pedir a publicação da página
+        run: |
+          curl -s -o /dev/null -w "pages build: %{http_code}\n" -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages/builds"
