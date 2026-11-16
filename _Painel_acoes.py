@@ -520,7 +520,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V025", "16/11/2026"
+VERSAO, DATA_VERSAO = "V026", "16/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3930,6 +3930,7 @@ def atualizar_precos():
     except Exception:
         pass
     print(msg)
+    sync_dos_precos(folhas[1][1], folhas[2][1])
     gerar_html(folhas[1][1], folhas[2][1], msg)
     registo(f"preços: {len(precos)} de {len(tickers)} títulos (ligação ao Excel: {ex.modo})")
     time.sleep(2)
@@ -4033,11 +4034,10 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
   const sub=l=>{const t=l.filter(d=>d.ce!=null&&d.vd!=null);return [t.reduce((s,d)=>s+d.ce,0),t.reduce((s,d)=>s+d.vd,0)];};
   const [ca,va]=sub(D.a),[ce,ve]=sub(D.e),lin=(n,cc,vv,q)=>`<b>${n}:</b> compra ${eur(cc)}${q?` (${num(cc/c*100,0)}%/carteira)`:''} / atual ${eur(vv)} <b style="color:${vv>=cc?'#1e8e3e':'#d93025'}">(${pct2(cc?vv/cc-1:0)})</b>`;
   document.getElementById('qdt').innerHTML=[lin('Ações',ca,va,1),lin('ETFs',ce,ve,1),lin('Total',c,v,0)].join('<br>');
-  let vis=false;try{vis=sessionStorage.getItem('qd')===D.v;}catch(e){}
-  if(!vis){document.getElementById('qd').style.display='block';}
-  document.getElementById('qdx').onclick=()=>{document.getElementById('qd').style.display='none';try{sessionStorage.setItem('qd',D.v);}catch(e){}};
+  document.getElementById('qdx').onclick=e=>{e.stopPropagation();document.getElementById('qd').style.display='none';};
+  g.style.cursor='pointer';
   g.onclick=()=>{document.getElementById('qd').style.display='block';};
-  g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>`;},0);
+  g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b> <span style="font-size:11px;color:var(--mu)">▸ ver posição</span>`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
@@ -4506,6 +4506,11 @@ def publicar_github(html, versao=""):
         if SYNC:
             defs = dict(SYNC, token_botao=cfg.get("token_botao"), enviado=f"{datetime.now():%d/%m/%Y %H:%M}")
             _enviar_github(cfg, "config.enc", _cifrar(json.dumps(defs, ensure_ascii=False, default=_json_num), cfg["senha"]))
+            try:                                     # cópia local (o ↻ PREÇOS atualiza nela os detidos e volta a enviá-la)
+                with open(FICH_SYNC, "w", encoding="utf-8") as f:
+                    json.dump(SYNC, f, ensure_ascii=False, default=_json_num)
+            except Exception:
+                pass
             with open(os.path.abspath(__file__), encoding="utf-8") as f:
                 _enviar_github(cfg, "_Painel_acoes.py", f.read())
             _garantir_workflow(cfg)
@@ -4523,6 +4528,31 @@ def publicar_github(html, versao=""):
 
 
 BOTAO = None          # {"o": utilizador, "r": repositório, "t": token só de Actions} -> botão ↻ na página
+FICH_SYNC = os.path.join(os.path.dirname(FICH_GH), "definicoes.json")
+
+
+def sync_dos_precos(linhas, etfs):
+    """↻ PREÇOS: as definições do último ▶ ATUALIZAR com os detidos (x, nº de ações, preço de compra) como estão agora
+    nas folhas, para as atualizações automáticas não voltarem a valores antigos."""
+    try:
+        with open(FICH_SYNC, encoding="utf-8") as f:
+            base = json.load(f)
+    except Exception:
+        return
+    det, qtd, pc = set(), {}, {}
+    for d in list(linhas) + list(etfs):
+        ks = [k for k in (txt(d.get("nome")), txt(d.get("ticker")).upper()) if k]
+        q = d.get("qtd") if isinstance(d.get("qtd"), (int, float)) else qtd_detida(d.get("det"))
+        if e_detido(d.get("det")) or q:
+            det.update(ks)
+        if isinstance(q, (int, float)) and q > 0:
+            qtd.update({k: q for k in ks})
+        if isinstance(d.get("pcompra"), (int, float)):
+            pc.update({k: d["pcompra"] for k in ks})
+    SYNC.clear()
+    SYNC.update(base, det=sorted(det), qtd=qtd, pcompra=pc)
+
+
 SYNC = {}             # definições do PC para o servidor (acrescentados, x, modo, longo prazo mínimo, ações dos ETFs)
 
 
