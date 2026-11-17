@@ -242,7 +242,7 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("desde_ref", "Da data de referência até hoje (%)", 11, "pct", "teste"),
         ("nota", "Nota global (pesos na folha Ponderações)", 9, "nota", "global"),
         ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
-        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 12, "nivel", "global"),
+        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 15, "nivel", "global"),
         ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
         ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
         ("etf_desc", "Descrição do ETF", 40, "txt", "id"),
@@ -325,7 +325,8 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab")   # corr: corretora (escondida por agora; os valores ficam)
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab",
+           "compra", "compra_alt", "compra_pct")     # compra razoável (trigger): já não se usa; fica só a compra máxima   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
          "div": 6, "div_alt": 6, "div_yield": 6, "payout": 6, "sinal": 14, "saude": 14, "lp_txt": 14}
@@ -530,7 +531,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V051", "17/11/2026"
+VERSAO, DATA_VERSAO = "V053", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1218,13 +1219,13 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
             ws.conditional_formatting.add(faixa(k), FormulaRule(
                 formula=[f"AND(${sc}{L0+1}=1,${nvl}{L0+1}<={lim})"], fill=PatternFill("solid", bgColor=cor),
                 font=Font(color=fcor, bold=True), stopIfTrue=True))
-    # nível de preço: escala própria com a paleta vermelho → branco → verde (1 muito cara … 3 justa … 5 muito barata)
-    ws.conditional_formatting.add(faixa("nivel_preco"), ColorScaleRule(
-        start_type="num", start_value=1, start_color=VERMELHO, mid_type="num", mid_value=3, mid_color=BRANCO,
-        end_type="num", end_value=5, end_color=VERDE))
+    # nível de preço: uma cor por rótulo (vermelho → branco → verde), para o número, o nome e a cor baterem certo
     # nível de preço com o texto ao lado do número (1,2 Muito cara … 4,5 Muito barata)
+    from openpyxl.styles import PatternFill as _PF
     for i, (cond, rot) in enumerate(rotulos_nivel()):
-        dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=360 + i, formatCode=f'0.0" {rot}"'))
+        dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=360 + i, formatCode=f'0.0" {rot}"'),
+                                fill=_PF(bgColor=COR_NIVEL[rot], fill_type="solid"),
+                                font=Font(bold=True, color="FFFFFF" if rot in ("Muito cara", "Muito barata") else "1C1E21"))
         ws.conditional_formatting.add(faixa("nivel_preco"), Rule(type="expression", dxf=dxf,
                                                                  formula=[cond.format(c=f"${nvl}{L0+1}")]))
     ws.conditional_formatting.add(faixa("decisao"), FormulaRule(
@@ -1350,11 +1351,10 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                      "média de analistas e valor justo. "
                      "Valor justo = lucro por ação dos últimos 12 meses × P/E habitual do título (mediana dos últimos 3 anos); sem histórico "
                      "de lucros, número de Graham. Verde = acima do preço atual, vermelho = abaixo. É um modelo simples, não uma garantia. "
-                     "Os 4 níveis (valor e % face ao preço atual; σ = volatilidade mensal do título, σ diário = σ / √21): "
+                     "Os 3 níveis (valor e % face ao preço atual; σ = volatilidade mensal do título, σ diário = σ / √21): "
                      "COMPRA MÁXIMA (a ordem limite principal) = preço × exp(σ diário × (−0,75 + 0,25 × tendência dos últimos 20 dias)): "
                      "sempre abaixo do preço (≈ −1,7%), menos em subida franca e mais em queda franca; no teste é executada ~58% das "
-                     "vezes em 3 dias e ~71% em 7 (se não for, e o sinal continuar de compra, comprar ao preço do momento). COMPRA RAZOÁVEL (trigger) = preço × exp(−σ) (≈ −10%): só é atingida numa "
-                     "correção a sério (~25% das vezes num mês) — boa para uma 2ª ordem com parte do montante. VENDA RAZOÁVEL = preço + 2σ: objetivo de ganho realista para 3-4 meses — referência, "
+                     "vezes em 3 dias e ~71% em 7 (se não for, e o sinal continuar de compra, comprar ao preço do momento). VENDA RAZOÁVEL = preço + 2σ: objetivo de ganho realista para 3-4 meses — referência, "
                      "não uma ordem: no teste, vender tudo num objetivo fixo rendeu menos do que esperar pelo sinal. VENDA MÍNIMA = "
                      "maior fecho dos últimos 6 meses − 4σ: rede de segurança contra uma queda brusca antes de as médias cruzarem "
                      "(no teste, usá-la como stop automático custou um pouco: é para casos extremos). "
@@ -2306,11 +2306,11 @@ def bolsas_alt(titulos, modo=None):
 NOTA_ALERTA = 2.5
 PICO_LUCRO = 1.5          # lucro dos últimos 12 meses > 1,5 × a média dos últimos 5 anos -> valor justo com a média
 # Ponderações da nota global (folha Ponderações; o total de cada bloco tem de dar 100%)
-PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.35, "saude": 0.20, "tend": 0.15,
+PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.30, "saude": 0.20, "tend": 0.20,
                    "etf_pont": 0.60, "etf_acoes": 0.20, "etf_tend": 0.20, "t10": 0.65, "t5": 0.35,
                    "caro_j": 0.20, "caro_pe": 40.0, "caro_fcf": 0.02, "caro_etf": 0.50, "usar_tend": 1, "usar_caro": 1,
-                   "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 0,
-                   "pe_hab_max": 35.0, "cap_pe_sinal": 0}
+                   "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 1,
+                   "pe_hab_max": 35.0, "cap_pe_sinal": 1}
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
     ("nivel_caro", "Nível de preço até ao qual é cara",
      "Nível de preço (5 muito barata … 1 muito cara) = 40% preço face ao valor justo, com o PER habitual limitado (30% "
@@ -2485,7 +2485,11 @@ def rotulos_nivel(lim=None):
     mc = min(1.5, lim)
     return [(f"AND(ISNUMBER({{c}}),{{c}}<={mc})", "Muito cara"), (f"AND({{c}}>{mc},{{c}}<={lim})", "Cara"),
             (f"AND({{c}}>{lim},{{c}}<=2.5)", "Algo cara"), (f"AND({{c}}>{max(2.5, lim)},{{c}}<3.5)", "Justa"),
-            (f"AND({{c}}>=3.5,{{c}}<=4.25)", "Barata"), (f"{{c}}>4.25", "Muito barata")]
+            (f"AND({{c}}>=3.5,{{c}}<=4.25)", "Barata"), (f"AND(ISNUMBER({{c}}),{{c}}>4.25)", "Muito barata")]
+
+
+COR_NIVEL = {"Muito cara": "E0484B", "Cara": "F8A5A6", "Algo cara": "FCE4D6", "Justa": "FFFFFF",
+             "Barata": "C6E5B3", "Muito barata": "4E9F5D"}
 
 
 def rotulo_nivel(v):
@@ -4755,11 +4759,11 @@ function cartao(d){
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
-  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${corNivel(d.np)[0]};color:${corNivel(d.np)[1]}">preço ${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/Muito/.test(d.nr||'')?'#fff':'#1c1e21'}">preço ${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
-  <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
-  <div>Máxima (ordem)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+  <div class="lv"><div class="rt">Compra</div><div>Máxima (ordem limite)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+  <div style="background:none;border:0"></div>
   <div class="rt">Vendas</div><div>Razoável<b>${pr(d.va)} <small>${pct(d.vap)}</small></b></div>
   <div class="red">Rede de segurança<b>${pr(d.vm)} <small>${pct(d.vmp)}</small></b></div></div><div class="more">`;
   if(d.ea!=null) h+=`<p><i>Nota ponderada das ações:</i> ${num(d.ea,1)}</p>`;
@@ -5266,6 +5270,7 @@ def pagina_html(linhas, etfs, texto):
                 "p": num(d.get("preco")), "nt": num(d.get("nota")), "dc": txt(d.get("decisao")), "pt": num(d.get("pont")),
                 "np": num(d.get("nivel_preco")), "ca": 1 if d.get("so_caro") == 1 else 0,
                 "nr": rotulo_nivel(d.get("nivel_preco")) or None,
+                "nc": "#" + COR_NIVEL[rotulo_nivel(d.get("nivel_preco"))] if rotulo_nivel(d.get("nivel_preco")) else None,
                 "x": e_detido(d.get("det")), "vd": valor_detido(d), "qn": num(d.get("qtd")) or qtd_detida(d.get("det")),
                 "br": txt(d.get("corr")) or None, "pc": num(d.get("pcompra")), "le": num(d.get("lp_eur")), "lpp": num(d.get("lp_pct")),
                 "ce": ((d["valor_eur"] - d["lp_eur"]) if isinstance(d.get("valor_eur"), (int, float))
