@@ -298,7 +298,8 @@ COLS += [("ppo", "PPO 12/26 (%)", 10, "pct", "ind"), ("ppo_sinal", "PPO: linha d
          ("tend20", "Tendência 20 dias (subida em σ, −2 a +2)", 11, "num1", "ind"),
          ("lp", "Longo prazo: subida média por ano (%)", 11, "pct", "ind"),
          ("lp10", "Longo prazo: subida média por ano nos últimos 10 anos (%)", 11, "pct", "ind"),
-         ("so_caro", "Mal classificado só por estar caro (1)", 5, "geral", "ind"),
+         ("so_caro", "Cara (1): só aviso, decisão a azul", 5, "geral", "ind"),
+         ("pe_fwd", "P/E futuro (lucros previstos para os próximos 12 meses)", 8, "num1", "ind"),
          ("nota_sc", "Nota global sem o travão de caro", 6, "nota", "ind"),
          ("lp5", "Longo prazo: subida média por ano nos últimos 5 anos (%)", 11, "pct", "ind"),
          ("mom6", "Subida 6 meses (%)", 11, "pct", "ind"), ("ref6m", "Preço há 6 meses", 11, "preco", "ind"),
@@ -321,7 +322,7 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc")   # corr: corretora (escondida por agora; os valores ficam)
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd")   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
          "div": 6, "div_alt": 6, "div_yield": 6, "payout": 6, "sinal": 14, "saude": 14, "lp_txt": 14}
@@ -526,7 +527,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V041", "17/11/2026"
+VERSAO, DATA_VERSAO = "V042", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -724,7 +725,7 @@ def folha_carteira(wb, linhas, etfs):
             p3.series[0].dPt.append(pt)
         p3.dataLabels = rotulos()
         p3.width, p3.height = 16, 11
-        ws.add_chart(p3, "X3")
+        ws.add_chart(p3, "R26")
 
 
 QUADRO = None         # dados da janela da posição (depois de cada ▶ ATUALIZAR)
@@ -1182,7 +1183,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                          mid_color=BRANCO, end_type="percentile", end_value=95, end_color=VERDE)
     dc = let(COL["decisao"])
     sc = let(COL["so_caro"])
-    for k in ("nota", "decisao"):                     # só cara: azul (seria boa; está mal classificada só pelo preço)
+    for k in ("decisao",):                            # cara: decisão a azul (só aviso, sem travão)
         ws.conditional_formatting.add(faixa(k), FormulaRule(
             formula=[f"${sc}{L0+1}=1"], fill=PatternFill("solid", bgColor="BDD7EE"),
             font=Font(color="1F4E79", bold=True), stopIfTrue=True))
@@ -1773,7 +1774,7 @@ def pontuar(d, preco):
                  + f"): nota global no máx. {NOTA_ALERTA}".replace(".", ","))
     cara = motivo_caro(d)
     if cara:
-        c.append(cara.replace(".", ",") + f": nota global no máx. {NOTA_ALERTA}".replace(".", ","))
+        c.append(cara.replace(".", ",") + " (só aviso: decisão a azul)")
     q, sn = n("qual"), n("saude_n")
     if q is not None:
         c.append(f"qualidade {q:.1f}/5 ({detalhe_qualidade(d)})".replace(".", ",", 1))
@@ -2257,14 +2258,15 @@ PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.35, "saude": 0.20, "tend": 0.15,
                    "caro_j": 0.20, "caro_pe": 40.0, "caro_fcf": 0.02}
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
     ("caro_j", "Preço acima do valor justo mais de",
-     "Se o preço estiver mais do que isto acima do valor justo (PER habitual do próprio título), a nota global fica no "
-     "máx. 2,5 e a decisão é \"Manter (cara)\".", "0%"),
+     "Aviso de cara (decisão a azul, sem mexer na nota): preço mais do que isto acima do valor justo (PER habitual do "
+     "próprio título).", "0%"),
     ("caro_pe", "PER máximo",
-     "Âncora absoluta: com PER (preço / lucro dos últimos 12 meses) acima disto, conta como cara mesmo que o histórico "
-     "do próprio título diga que é normal (evita a \"bolha do próprio histórico\").", "0"),
+     "Âncora absoluta, junto com a linha de baixo: conta como cara se o PER passar disto E o FCF yield ficar abaixo do "
+     "mínimo. O PER usado é o menor entre o atual e o futuro (lucros previstos), para não castigar quem cresce depressa.",
+     "0"),
     ("caro_fcf", "FCF yield mínimo",
-     "Âncora absoluta: free cash flow / capitalização abaixo disto conta como cara (não se aplica a bancos, seguradoras "
-     "e financeiras).", "0.0%"),
+     "Free cash flow / capitalização; só conta junto com o PER máximo (os dois ao mesmo tempo). Bancos, seguradoras e "
+     "financeiras: só o PER.", "0.0%"),
 ]
 BLOCOS_PESOS = (("pont", "qual", "saude", "tend"), ("etf_pont", "etf_acoes", "etf_tend"), ("t10", "t5"))
 PESOS = dict(PESOS_PROPOSTOS)
@@ -2361,13 +2363,15 @@ def motivo_caro(d):
     if txt(d.get("tipo")) == "ETF":
         return None
     n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
-    J, pe, fy = n("justo_pct"), n("pe"), n("fcf_yield")
+    J, fy = n("justo_pct"), n("fcf_yield")
+    pe = min(x for x in (n("pe"), n("pe_fwd")) if x is not None) if (n("pe") or n("pe_fwd")) else None
     if J is not None and J < -PESOS["caro_j"]:
         return f"cara: preço {-J:.0%} acima do valor justo (limite {PESOS['caro_j']:.0%})"
-    if pe is not None and pe > PESOS["caro_pe"]:
-        return f"cara: PER {pe:.0f} acima do máximo {PESOS['caro_pe']:.0f}"
-    if fy is not None and fy < PESOS["caro_fcf"] and not txt(d.get("saude")).startswith("não se aplica"):
-        return f"cara: FCF yield {fy:.1%} abaixo do mínimo {PESOS['caro_fcf']:.1%}"
+    # âncora absoluta: PER (o menor entre o atual e o futuro, que favorece quem cresce) alto E FCF yield baixo, juntos
+    financeira = txt(d.get("saude")).startswith("não se aplica")
+    if pe is not None and pe > PESOS["caro_pe"] and (financeira or fy is None or fy < PESOS["caro_fcf"]):
+        return (f"cara: PER {pe:.0f} acima de {PESOS['caro_pe']:.0f}"
+                + (f" e FCF yield {fy:.1%} abaixo de {PESOS['caro_fcf']:.1%}" if fy is not None and not financeira else ""))
     return None
 
 
@@ -2443,7 +2447,7 @@ def folha_pesos(wb):
     bloco(11, "ETFs", ["etf_pont", "etf_acoes", "etf_tend"])     # linhas 12-14, total 15
     bloco(17, "Tendência de longo prazo (ações e ETFs)", ["t10", "t5"])   # linhas 18-19, total 20
     # travões de "caro" (linhas 23-25): não somam 100%; cada um é um limite
-    ws.cell(21, 2, "Travões de preço caro (ações)").font = Font(bold=True, size=12)
+    ws.cell(21, 2, "Avisos de preço caro (ações): decisão a azul, não mexem na nota").font = Font(bold=True, size=12)
     for j, h in enumerate(("Travão", "O que representa", "Proposto", "A usar"), 2):
         c = ws.cell(22, j, h)
         c.font, c.fill, c.border = Font(bold=True, color="FFFFFF"), azul, borda
@@ -2496,21 +2500,16 @@ def decisao_global(d):
         return NIVEIS[1]
     if p == 2.5:
         return NIVEIS[2.5] + (" + saúde frágil" if alerta else "")
+    cara = " · cara" if d.get("so_caro") == 1 else ""   # só aviso (a azul): o preço não trava a nota
     if p < 3:
-        if d.get("so_caro") == 1 and isinstance(d.get("nota_sc"), (int, float)):
-            return f"Só cara: esperar (sem travão {d['nota_sc']:.1f})".replace(".", ",")
-        return "Manter (venda próxima)" if d.get("_vprox") else NIVEIS[2]
+        return ("Manter (venda próxima)" if d.get("_vprox") else NIVEIS[2]) + cara
     if alerta:
         return "Saúde frágil"
-    if motivo_caro(d):
-        if d.get("so_caro") == 1 and isinstance(d.get("nota_sc"), (int, float)):
-            return f"Só cara: esperar (sem travão {d['nota_sc']:.1f})".replace(".", ",")
-        return "Manter (cara)"
     nt = nt if isinstance(nt, (int, float)) else p
     nivel = 5 if nt >= 4.5 else 4 if nt >= 3.75 else 3 if nt >= 2.75 else None
     if nivel is None:
-        return "Manter (qualidade / saúde fracas)"
-    return NIVEIS[nivel] + (" (antecipada)" if d.get("_cprox") else "")
+        return "Manter (qualidade / saúde fracas)" + cara
+    return NIVEIS[nivel] + (" (antecipada)" if d.get("_cprox") else "") + cara
 
 
 def nota_global(d):
@@ -2531,11 +2530,10 @@ def nota_global(d):
         nota = (PESOS["pont"] * p + PESOS["qual"] * (q if q is not None else p)
                 + PESOS["saude"] * (sn if sn is not None else p) + PESOS["tend"] * (t if t is not None else p))
     outro = txt(d.get("saude")).startswith("ALERTA") or (lp is not None and lp < LP_MIN)
-    cara = motivo_caro(d)
-    # "só cara": seria boa (nota acima de 2,5), não tem outro travão e o sinal não é de venda -> assinala-se à parte
-    d["so_caro"] = 1 if (cara and not outro and nota > NOTA_ALERTA and p > 1) else None
-    d["nota_sc"] = round(nota, 2) if cara else None
-    if outro or cara:
+    # cara: só um aviso (decisão a azul); não trava a nota
+    d["so_caro"] = 1 if (motivo_caro(d) and not outro and p > 1) else None
+    d["nota_sc"] = None
+    if outro:
         nota = min(nota, NOTA_ALERTA)
     return round(nota, 2)
 Q_ROIC, Q_GPA, Q_FCFL = (0.05, 0.15), (0.10, 0.30), (0.5, 0.9)
@@ -3014,6 +3012,8 @@ def dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, eur, tx_orig):
         pass
     pe = _num(info.get("trailingPE"))
     d["pe"] = pe if pe and pe > 0 else None             # sem P/E: lucros negativos ou sem dados
+    pf = _num(info.get("forwardPE"))
+    d["pe_fwd"] = pf if pf and 0 < pf < 500 else None   # P/E com os lucros previstos para os próximos 12 meses
     d["_cap_local"] = _num(info.get("marketCap"))
     d.update(moeda=info.get("currency", ""), preco=preco, alvo=alvo,
              pot=(alvo / preco - 1) if (preco and alvo) else None,
@@ -4468,7 +4468,7 @@ const eur=v=>'€ '+num(v,2);
 const esc=s=>(s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function cartao(d){
   const dc=d.dc||'';
-  const corDec=dc.startsWith('Só cara')?'#BDD7EE':d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.pt!=null&&d.pt<3)?'#FFEB9C':cor(d.nt);
+  const corDec=dc.includes('· cara')?'#BDD7EE':d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.pt!=null&&d.pt<3)?'#FFEB9C':cor(d.nt);
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cor(d.nt)}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
@@ -6050,6 +6050,12 @@ def atualizar_tudo(so=None, servidor=None):
         qual = {"acoes": f"{len(linhas)} ações ({n_alvo} com preço-alvo); ETFs como estavam",
                 "etfs": f"{len(etfs)} ETFs; ações como estavam"}.get(so, f"{len(linhas)} ações ({n_alvo} com preço-alvo) e {len(etfs)} ETFs")
         print(f"\nPainel atualizado: {qual}.")
+        mc = [motivo_caro(d) for d in linhas]
+        mc = [m for m in mc if m]
+        if mc:
+            nj = sum("valor justo" in m for m in mc)
+            print(f"Avisos de cara (decisão a azul): {len(mc)} ações — {nj} pelo valor justo, {len(mc) - nj} por PER e "
+                  "FCF yield (limites na folha Ponderações).")
 
 
 if __name__ == "__main__":
