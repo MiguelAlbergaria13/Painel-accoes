@@ -243,6 +243,7 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("nota", "Nota global (pesos na folha Ponderações)", 9, "nota", "global"),
         ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
         ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 19, "nivel", "global"),
+        ("beta", "Beta: oscilação face ao mercado (S&P 500; 1 = igual, >1 amplifica, <1 amortece)", 6, "num1", "global"),
         ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
         ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
         ("etf_desc", "Descrição do ETF", 40, "txt", "id"),
@@ -531,7 +532,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V054", "17/11/2026"
+VERSAO, DATA_VERSAO = "V056", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -598,7 +599,77 @@ def totais_carteira(linhas, etfs):
                 c += d["valor_eur"] - d["lp_eur"]
         out[nome] = (c, a)
     out["total"] = (out["acoes"][0] + out["etfs"][0], out["acoes"][1] + out["etfs"][1])
+    out["beta"] = betas_carteira(linhas, etfs)
     return out
+
+
+FICH_BETAS = os.path.join(PASTA, "_Painel_acoes_betas.json")
+
+
+def completar_betas(linhas, etfs):
+    """Títulos detidos sem beta (folha de uma versão anterior, ou linha não atualizada): vai buscá-lo à última vez
+    guardada ou ao Yahoo (só esses, em paralelo). Guarda os betas conhecidos para a próxima vez."""
+    try:
+        with open(FICH_BETAS, encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+    todos = [(d, d in etfs) for d in list(linhas) + list(etfs)]
+    for d, _ in todos:
+        t = txt(d.get("ticker")).upper()
+        if t and isinstance(d.get("beta"), (int, float)):
+            cache[t] = d["beta"]
+    falta = []
+    for d, etf in todos:
+        carteira(d)
+        if not isinstance(d.get("beta"), (int, float)) and isinstance(d.get("valor_eur"), (int, float)):
+            t = txt(d.get("ticker")).upper()
+            if t in cache:
+                d["beta"] = cache[t]
+            elif t:
+                falta.append((d, etf, t))
+    if falta:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            yf = _yf()
+
+            def um(x):
+                d, etf, t = x
+                try:
+                    inf = yf.Ticker(t).info or {}
+                    b = _num(inf.get("beta3Year" if etf else "beta")) or _num(inf.get("beta"))
+                    return round(b, 2) if b is not None and -3 < b < 6 else None
+                except Exception:
+                    return None
+            with ThreadPoolExecutor(8) as ex:
+                for (d, etf, t), b in zip(falta, ex.map(um, falta, timeout=30)):
+                    if b is not None:
+                        d["beta"] = cache[t] = b
+        except Exception:
+            pass
+    try:
+        with open(FICH_BETAS, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+
+def betas_carteira(linhas, etfs):
+    """Beta médio ponderado pelo valor atual (só os títulos com beta): {'acoes': b, 'etfs': b, 'total': b}."""
+    completar_betas(linhas, etfs)
+    acc = {"acoes": [0.0, 0.0], "etfs": [0.0, 0.0]}
+    for nome, ls in (("acoes", linhas), ("etfs", etfs)):
+        for d in ls:
+            v, b = d.get("valor_eur"), d.get("beta")
+            if isinstance(v, (int, float)) and v > 0 and isinstance(b, (int, float)):
+                acc[nome][0] += v * b
+                acc[nome][1] += v
+    t = [acc["acoes"][0] + acc["etfs"][0], acc["acoes"][1] + acc["etfs"][1]]
+    return {k: (round(x[0] / x[1], 2) if x[1] else None) for k, x in (*acc.items(), ("total", t))}
+
+
+def fmt_beta(b):
+    return f"{b:.2f}".replace(".", ",") if isinstance(b, (int, float)) else "–"
 
 
 def texto_quadro(tot):
@@ -611,7 +682,11 @@ def texto_quadro(tot):
         c, a = tot[k]
         quota = f" ({c / ct:.0%}/carteira)".replace(".", ",") if k != "total" else ""
         var = f" ({a / c - 1:+.2%})".replace(".", ",") if c else ""
-        ls.append(f"{nome}:  valor de compra {fmt_eur(c)}{quota}  /  valor atual {fmt_eur(a)}{var}")
+        bt = (tot.get("beta") or {}).get(k)
+        ls.append(f"{nome}:  valor de compra {fmt_eur(c)}{quota}  /  valor atual {fmt_eur(a)}{var}"
+                  + (f"  /  beta {fmt_beta(bt)}" if bt is not None else ""))
+    if (tot.get("beta") or {}).get("total") is not None:
+        ls.append("Beta = volatilidade comparada com o mercado (S&P 500): 1 = como o mercado; 1,3 = 30% mais")
     return "\n".join(ls)
 
 
@@ -625,25 +700,28 @@ def folha_carteira(wb, linhas, etfs):
     ws["A1"] = "Carteira: valor de compra, valor atual e lucro / prejuízo (em euros, ao câmbio de hoje)"
     ws["A1"].font = Font(size=14, bold=True)
     cab = ["Título", "Tipo", "Compra (€)", "Atual (€)", "Lucro / prejuízo (€)", "Lucro / prejuízo (%)",
-           "Valor de compra (mantido)", "Lucro", "Prejuízo"]
+           "Valor de compra (mantido)", "Lucro", "Prejuízo", "Beta"]
     for j, h in enumerate(cab, 1):
         c = ws.cell(3, j, h)
         c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3B57")
         c.alignment = Alignment(horizontal="center", wrap_text=True)
     dados = []
+    tot = totais_carteira(linhas, etfs)                 # (também completa os betas em falta)
     for d in list(linhas) + list(etfs):
         carteira(d)
         if isinstance(d.get("valor_eur"), (int, float)) and isinstance(d.get("lp_eur"), (int, float)):
             a, l = d["valor_eur"], d["lp_eur"]
             dados.append((txt(d.get("nome")) + (f" ({txt(d.get('ticker'))})" if modo_atual() == "todos" else ""),
-                          txt(d.get("tipo")) or "Ação", round(a - l, 2), a, l))
+                          txt(d.get("tipo")) or "Ação", round(a - l, 2), a, l,
+                          d["beta"] if isinstance(d.get("beta"), (int, float)) else None))
     dados.sort(key=lambda x: -x[2])
-    for i, (n, t, c, a, l) in enumerate(dados, 4):
-        for j, v in enumerate([n, t, c, a, l, (a / c - 1) if c else None, min(c, a), max(l, 0), max(-l, 0)], 1):
+    for i, (n, t, c, a, l, bt) in enumerate(dados, 4):
+        for j, v in enumerate([n, t, c, a, l, (a / c - 1) if c else None, min(c, a), max(l, 0), max(-l, 0), bt], 1):
             cel = ws.cell(i, j, v)
-            cel.number_format = "+0.00%;-0.00%;0.00%" if j == 6 else ('"€"* #,##0.00' if j >= 3 else "General")
+            cel.number_format = ("+0.00%;-0.00%;0.00%" if j == 6 else "0.00" if j == 10
+                                 else ('"€"* #,##0.00' if j >= 3 else "General"))
         ws.cell(i, 5).font = ws.cell(i, 6).font = Font(bold=True, color="00A050" if l >= 0 else "C00000")
-    for col, w in zip("ABCDEFGHI", (34, 8, 13, 13, 13, 10, 11, 11, 11)):
+    for col, w in zip("ABCDEFGHIJ", (34, 8, 13, 13, 13, 10, 11, 11, 11, 7)):
         ws.column_dimensions[col].width = w
     if not dados:
         ws["A5"] = "Escreve o nº de ações e o preço médio de compra nas folhas Ações / ETFs para ver a carteira."
@@ -652,7 +730,13 @@ def folha_carteira(wb, linhas, etfs):
     # totais ações vs ETFs
     r0 = 4 + n + 2
     ws.cell(r0, 1, "Totais").font = Font(bold=True)
-    tot = totais_carteira(linhas, etfs)
+    ws.cell(r0, 10, "Beta médio").font = Font(bold=True)
+    for i, k in zip((r0 + 1, r0 + 2, r0 + 3), ("acoes", "etfs", "total")):
+        ws.cell(i, 10, tot["beta"].get(k)).number_format = "0.00"
+    ws.cell(r0 + 3, 10).font = Font(bold=True)
+    ws.cell(r0 + 5, 1, "Beta = volatilidade comparada com o mercado (S&P 500): 1 = oscila como o mercado; 1,3 = oscila "
+                       "30% mais; 0,7 = oscila 30% menos. Beta médio: ponderado pelo valor atual.").font = \
+        Font(italic=True, color="595959")
     for i, (nome, k) in enumerate((("Ações", "acoes"), ("ETFs", "etfs")), r0 + 1):
         ws.cell(i, 1, nome)
         ws.cell(i, 3, round(tot[k][0], 2)).number_format = '"€"* #,##0.00'
@@ -702,11 +786,11 @@ def folha_carteira(wb, linhas, etfs):
     from openpyxl.chart.series import DataPoint
     lp = sorted([x for x in dados if x[4] > 0], key=lambda x: -x[4]) + sorted([x for x in dados if x[4] < 0], key=lambda x: x[4])
     if lp:
-        r1 = r0 + 6
+        r1 = r0 + 7
         ws.cell(r1, 1, "Lucros e prejuízos (gráfico circular)").font = Font(bold=True)
         ws.cell(r1 + 1, 1, "Título").font = ws.cell(r1 + 1, 3, "Lucro / prejuízo (€)").font = Font(bold=True)
         ws.cell(r1 + 1, 4, "Tamanho da fatia (€)").font = Font(bold=True)
-        for i, (nome, _, c, a, l) in enumerate(lp, r1 + 2):
+        for i, (nome, _, c, a, l, *_r) in enumerate(lp, r1 + 2):
             ws.cell(i, 1, f"{nome} ({'+' if l >= 0 else '−'})")
             ws.cell(i, 3, round(l, 2)).number_format = '+"€" #,##0.00;-"€" #,##0.00'
             ws.cell(i, 3).font = Font(bold=True, color="00A050" if l >= 0 else "C00000")
@@ -744,10 +828,11 @@ def dados_posicao(linhas, etfs):
         for d in ls:
             if isinstance(d.get("valor_eur"), (int, float)) and isinstance(d.get("lp_eur"), (int, float)):
                 q = d.get("qtd") if isinstance(d.get("qtd"), (int, float)) else qtd_detida(d.get("det"))
-                tit.append([txt(d.get("nome")), tipo, q, d["valor_eur"] - d["lp_eur"], d["valor_eur"]])
+                tit.append([txt(d.get("nome")), tipo, q, d["valor_eur"] - d["lp_eur"], d["valor_eur"],
+                            d.get("beta") if isinstance(d.get("beta"), (int, float)) else None])
     tit.sort(key=lambda x: -x[3])
     return {"quando": f"{datetime.now():%d/%m/%Y %H:%M}", "acoes": tot["acoes"], "etfs": tot["etfs"],
-            "total": tot["total"], "titulos": tit}
+            "total": tot["total"], "beta": tot.get("beta") or {}, "titulos": tit}
 
 
 def gravar_posicao(dp):
@@ -807,7 +892,8 @@ def janela_posicao():
         res = ttk.Frame(raiz, padding=(12, 4))
         res.pack(fill="x")
         ct = dp["total"][0]
-        cols = ("", "Valor de compra", "% da carteira", "Valor atual", "Lucro / prejuízo", "%")
+        cols = ("", "Valor de compra", "% da carteira", "Valor atual", "Lucro / prejuízo", "%", "Beta médio")
+        bts = dp.get("beta") or {}
         for j, h in enumerate(cols):
             ttk.Label(res, text=h, font=("Segoe UI", 9, "bold"), anchor="e" if j else "w").grid(row=0, column=j, sticky="ew", padx=6)
             res.columnconfigure(j, weight=1)
@@ -817,26 +903,56 @@ def janela_posicao():
             cor = verde if l >= 0 else verm
             negr = ("Segoe UI", 10, "bold") if k == "total" else ("Segoe UI", 10)
             vals = (nome, fmt_eur(c), f"{c / ct:.1%}".replace(".", ",") if k != "total" else "100%", fmt_eur(a),
-                    fmt_eur(l, True), (f"{l / c:+.2%}".replace(".", ",") if c else ""))
+                    fmt_eur(l, True), (f"{l / c:+.2%}".replace(".", ",") if c else ""), fmt_beta(bts.get(k)))
             for j, v in enumerate(vals):
                 ttk.Label(res, text=v, font=negr, anchor="e" if j else "w",
-                          foreground=cor if j >= 4 else None).grid(row=i, column=j, sticky="ew", padx=6, pady=1)
+                          foreground=cor if 4 <= j <= 5 else None).grid(row=i, column=j, sticky="ew", padx=6, pady=1)
+        ttk.Label(raiz, padding=(18, 2, 12, 0), foreground="#595959", font=("Segoe UI", 9), justify="left",
+                  text="Beta = volatilidade comparada com o mercado (S&P 500): 1 = oscila como o mercado; "
+                       "1,3 = oscila 30% mais; 0,7 = oscila 30% menos.\nBeta médio: média dos títulos, "
+                       "ponderada pelo valor atual de cada um.").pack(fill="x")
         ttk.Separator(raiz).pack(fill="x", padx=12, pady=6)
         fr = ttk.Frame(raiz, padding=(12, 0))
         fr.pack(fill="both", expand=True)
-        cs = ("tit", "tipo", "qtd", "compra", "atual", "lp", "pct")
+        cs = ("tit", "tipo", "qtd", "compra", "atual", "lp", "pct", "beta")
+        nomes = ("Título", "Tipo", "Nº", "Compra (€)", "Atual (€)", "Lucro / prejuízo (€)", "%", "Beta")
         tv = ttk.Treeview(fr, columns=cs, show="headings", height=8)
-        for cid, h, w, an in zip(cs, ("Título", "Tipo", "Nº", "Compra (€)", "Atual (€)", "Lucro / prejuízo (€)", "%"),
-                                 (220, 50, 60, 100, 100, 120, 70), ("w", "center", "e", "e", "e", "e", "e")):
-            tv.heading(cid, text=h)
-            tv.column(cid, width=w, anchor=an, stretch=True)
         tv.tag_configure("g", foreground=verde)
         tv.tag_configure("p", foreground=verm)
-        for n, tp, q, c, a in dp["titulos"]:
+        linhas_t = []                                   # [valores de ordenação por coluna, valores mostrados, tag]
+        for n, tp, q, c, a, *resto in dp["titulos"]:
+            bt = resto[0] if resto else None
             l = a - c
-            tv.insert("", "end", tags=("g" if l >= 0 else "p",),
-                      values=(n, tp, f"{q:,.2f}".replace(",", " ").replace(".", ",") if isinstance(q, (int, float)) else "",
-                              fmt_eur(c), fmt_eur(a), fmt_eur(l, True), f"{l / c:+.2%}".replace(".", ",") if c else ""))
+            qn = q if isinstance(q, (int, float)) else None
+            linhas_t.append(((n.lower(), tp, qn, c, a, l, (l / c if c else None), bt),
+                             (n, tp, f"{q:,.2f}".replace(",", " ").replace(".", ",") if qn is not None else "",
+                              fmt_eur(c), fmt_eur(a), fmt_eur(l, True), f"{l / c:+.2%}".replace(".", ",") if c else "",
+                              fmt_beta(bt) if bt is not None else ""),
+                             "g" if l >= 0 else "p"))
+        estado = {"col": 3, "desc": True}               # começa por valor de compra, do maior para o menor
+
+        def mostrar():
+            j, desc = estado["col"], estado["desc"]
+            com = [x for x in linhas_t if x[0][j] is not None]
+            sem = [x for x in linhas_t if x[0][j] is None]   # vazios sempre no fim
+            com.sort(key=lambda x: x[0][j], reverse=desc)
+            tv.delete(*tv.get_children())
+            for _, vals, tg in com + sem:
+                tv.insert("", "end", tags=(tg,), values=vals)
+            for i, (cid, h) in enumerate(zip(cs, nomes)):
+                tv.heading(cid, text=h + ((" ▼" if desc else " ▲") if i == j else ""))
+
+        def ordenar(j):
+            if estado["col"] == j:
+                estado["desc"] = not estado["desc"]
+            else:                                       # texto: A→Z; números: do maior para o menor
+                estado["col"], estado["desc"] = j, j >= 2
+            mostrar()
+        for i, (cid, h, w, an) in enumerate(zip(cs, nomes, (220, 50, 60, 100, 100, 145, 70, 60),
+                                                ("w", "center", "e", "e", "e", "e", "e", "e"))):
+            tv.heading(cid, text=h, command=lambda i=i: ordenar(i))
+            tv.column(cid, width=w, anchor=an, stretch=True)
+        mostrar()
         sb = ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=sb.set)
         tv.pack(side="left", fill="both", expand=True)
@@ -867,10 +983,8 @@ def ver_posicao():
         r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
         chaves = [k for k, *_ in COLS]
         ls = []
-        for tab in r:
-            if not cab_ok([txt(v) for v in tab[0]]):
-                raise ValueError("colunas")
-            ls.append([d for d in (linha_lida(chaves, v) for v in tab[1:]) if txt(d.get("ticker"))])
+        for idx, tab in zip((1, 2), r):
+            ls.append(linhas_por_cabecalho(tab, idx))
         gravar_posicao(dados_posicao(*ls))
     except Exception:
         pass                                            # fica a última posição guardada
@@ -1152,7 +1266,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
             elif fmt == "pct":
                 c.number_format = "+0.00%;-0.00%;0.00%" if k == "lp_pct" else "+0.0%;-0.0%;0.0%"
             elif fmt == "num1":
-                c.number_format = "#,##0.0"
+                c.number_format = "0.00" if k == "beta" else "#,##0.0"
             elif fmt == "qtd":
                 c.number_format = "#,##0.00"
             elif fmt == "eur":
@@ -1228,6 +1342,11 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                                 font=Font(bold=True, color="FFFFFF" if "muito" in rot else "1C1E21"))
         ws.conditional_formatting.add(faixa("nivel_preco"), Rule(type="expression", dxf=dxf,
                                                                  formula=[cond.format(c=f"${nvl}{L0+1}")]))
+    bl = let(COL["beta"])                # beta: verde defensiva, branco ≈ mercado, vermelhos amplifica
+    for cond, cor, fc in ((f"${bl}{L0+1}<0.8", "C6E5B3", "1C1E21"), (f"${bl}{L0+1}>1.5", "F8A5A6", "9C0006"),
+                          (f"${bl}{L0+1}>1.2", "FCE4D6", "1C1E21")):
+        ws.conditional_formatting.add(faixa("beta"), FormulaRule(formula=[f"AND(ISNUMBER(${bl}{L0+1}),{cond})"],
+                                      fill=PatternFill("solid", bgColor=cor), font=Font(color=fc), stopIfTrue=True))
     ws.conditional_formatting.add(faixa("decisao"), FormulaRule(
         formula=[f'ISNUMBER(SEARCH("saúde frágil",{dc}{L0+1}))'], fill=PatternFill("solid", bgColor="F8CBAD"),
         font=Font(color="C00000", bold=True), stopIfTrue=True))
@@ -3090,6 +3209,7 @@ def ponderar_etfs(linhas, etfs, comp):
         if c.get("desc"):
             e["etf_desc"] = c["desc"]
         partes, soma_w, soma_wn, total, soma_wc, soma_wcn = [], 0.0, 0.0, 0.0, 0.0, 0.0
+        soma_wb, soma_wbn = 0.0, 0.0
         for sym, nm, w in c.get("hold", []):
             total += w
             a = _acao_de(sym, indice, nm)
@@ -3100,6 +3220,9 @@ def ponderar_etfs(linhas, etfs, comp):
                 if isinstance(a.get("nivel_preco"), (int, float)):
                     soma_wc += w * a["nivel_preco"]
                     soma_wcn += w
+            if a is not None and isinstance(a.get("beta"), (int, float)):
+                soma_wb += w * a["beta"]
+                soma_wbn += w
             partes.append(f"{nm} {w:.1%}".replace(".", ",") + (f" ({nt:.1f})".replace(".", ",") if nt is not None else ""))
         if partes:
             e["etf_comp"] = ((f"(aprox. pelo {c['proxy']}, mesmo índice) " if c.get("proxy") else "")
@@ -3107,6 +3230,8 @@ def ponderar_etfs(linhas, etfs, comp):
         e["etf_acoes"] = round(soma_wn / soma_w, 2) if soma_w > 0 else None
         e["etf_caro"] = None
         e["nivel_preco"] = round(soma_wc / soma_wcn, 1) if soma_wcn >= 0.15 else None
+        if soma_wbn >= 0.15:                            # beta do ETF: média das ações conhecidas (senão o do Yahoo)
+            e["beta"] = round(soma_wb / soma_wbn, 2)
         e["nota"] = nota_global(e)
         e["decisao"] = decisao_global(e)
         mc = motivo_caro(e)
@@ -3296,6 +3421,8 @@ def dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, eur, tx_orig):
     pf = _num(info.get("forwardPE"))
     d["pe_fwd"] = pf if pf and 0 < pf < 500 else None   # P/E com os lucros previstos para os próximos 12 meses
     d["_cap_local"] = _num(info.get("marketCap"))
+    bt = _num(info.get("beta")) if not etf else _num(info.get("beta3Year"))
+    d["beta"] = round(bt, 2) if bt is not None and -3 < bt < 6 else None   # ETFs: depois pelas ações (ponderar_etfs)
     d.update(moeda=info.get("currency", ""), preco=preco, alvo=alvo,
              pot=(alvo / preco - 1) if (preco and alvo) else None,
              nanal=nanal, rec=info.get("recommendationKey"), notas=nota)
@@ -4123,6 +4250,25 @@ def linha_lida(chaves, v):
     return {k: sem_esp(x) for k, x in zip(chaves, v)}
 
 
+def linhas_por_cabecalho(tab, idx):
+    """Linhas da tabela lida (folha idx), pelas colunas desta versão; se a folha ainda for de uma versão anterior
+    (ex.: sem a coluna Beta), lê cada coluna pelo nome do cabeçalho. Só para ler (ver posição)."""
+    chaves = [k for k, *_ in COLS]
+    cab = [txt(v) for v in tab[0]]
+    if cab_ok(cab):
+        return [d for d in (linha_lida(chaves, v) for v in tab[1:]) if txt(d.get("ticker"))]
+    ref = CAB_RANK if idx == 1 else CAB_ETFS
+    pos = {k: cab.index(h) for k, h in zip(chaves, ref) if h in cab}
+    if "ticker" not in pos:
+        raise ValueError("colunas")
+    out = []
+    for v in tab[1:]:
+        d = {k: (sem_esp(v[j]) if j < len(v) else None) for k, j in pos.items()}
+        if txt(d.get("ticker")):
+            out.append(d)
+    return out
+
+
 def qtd_detida(v):
     """Coluna 'Detido': x (tens, sem dizer quantas) ou o nº de ações (pode ter decimais). Devolve o nº ou None."""
     if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -4684,8 +4830,10 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
   const c=t.reduce((s,d)=>s+d.ce,0),v=t.reduce((s,d)=>s+d.vd,0),l=v-c,cor=l>=0?'#1e8e3e':'#d93025';
   const g=document.getElementById('glob');g.style.display='block';
   const sub=l=>{const t=l.filter(d=>d.ce!=null&&d.vd!=null);return [t.reduce((s,d)=>s+d.ce,0),t.reduce((s,d)=>s+d.vd,0)];};
-  const [ca,va]=sub(D.a),[ce,ve]=sub(D.e),lin=(n,cc,vv,q)=>`<b>${n}:</b> compra ${eur(cc)}${q?` (${num(cc/c*100,0)}%/carteira)`:''} / atual ${eur(vv)} <b style="color:${vv>=cc?'#1e8e3e':'#d93025'}">(${pct2(cc?vv/cc-1:0)})</b>`;
-  document.getElementById('qdt').innerHTML=[lin('Ações',ca,va,1),lin('ETFs',ce,ve,1),lin('Total',c,v,0)].join('<br>');
+  const bm=l=>{const t=l.filter(d=>d.vd>0&&d.be!=null),w=t.reduce((s,d)=>s+d.vd,0);return w?t.reduce((s,d)=>s+d.vd*d.be,0)/w:null;};
+  const [ca,va]=sub(D.a),[ce,ve]=sub(D.e),lin=(n,cc,vv,q,b)=>`<b>${n}:</b> compra ${eur(cc)}${q?` (${num(cc/c*100,0)}%/carteira)`:''} / atual ${eur(vv)} <b style="color:${vv>=cc?'#1e8e3e':'#d93025'}">(${pct2(cc?vv/cc-1:0)})</b>${b!=null?` · beta <b>${num(b,2)}</b>`:''}`;
+  document.getElementById('qdt').innerHTML=[lin('Ações',ca,va,1,bm(D.a)),lin('ETFs',ce,ve,1,bm(D.e)),lin('Total',c,v,0,bm(D.a.concat(D.e)))].join('<br>')
+    +'<div style="font-size:11px;color:#666;margin-top:4px">Beta = volatilidade comparada com o mercado (S&amp;P 500): 1 = oscila como o mercado; 1,3 = oscila 30% mais; 0,7 = 30% menos. Médias ponderadas pelo valor atual.</div>';
   document.getElementById('qdx').onclick=e=>{e.stopPropagation();document.getElementById('qd').style.display='none';};
   g.style.cursor='pointer';
   g.onclick=()=>{document.getElementById('qd').style.display='block';};
@@ -4767,6 +4915,7 @@ function cartao(d){
   <div class="rt">Vendas</div><div>Razoável<b>${pr(d.va)} <small>${pct(d.vap)}</small></b></div>
   <div class="red">Rede de segurança<b>${pr(d.vm)} <small>${pct(d.vmp)}</small></b></div></div><div class="more">`;
   if(d.ea!=null) h+=`<p><i>Nota ponderada das ações:</i> ${num(d.ea,1)}</p>`;
+  if(d.be!=null) h+=`<p><i>Beta:</i> ${num(d.be,2)} <small>(${d.be>1.2?'oscila mais do que o mercado':d.be<0.8?'mais defensiva do que o mercado':'acompanha o mercado'})</small></p>`;
   if(d.q!=null||d.s!=null) h+=`<p><i>Qualidade:</i> ${d.q==null?'–':num(d.q,1)} · <i>Saúde:</i> ${d.s==null?'–':num(d.s,1)}</p>`;
   if(d.sd) h+=`<p class="${String(d.sd).startsWith('ALERTA')?'alerta':''}">${esc(d.sd)}</p>`;
   if(d.sg) h+=`<p><i>Médias 100/200:</i> ${esc(d.sg)}</p>`;
@@ -5268,7 +5417,7 @@ def pagina_html(linhas, etfs, texto):
     def item(d):
         return {"n": txt(d.get("nome")), "c": txt(d.get("codigo")), "t": txt(d.get("ticker")), "m": txt(d.get("moeda")),
                 "p": num(d.get("preco")), "nt": num(d.get("nota")), "dc": txt(d.get("decisao")), "pt": num(d.get("pont")),
-                "np": num(d.get("nivel_preco")), "ca": 1 if d.get("so_caro") == 1 else 0,
+                "np": num(d.get("nivel_preco")), "be": num(d.get("beta")), "ca": 1 if d.get("so_caro") == 1 else 0,
                 "nr": rotulo_nivel(d.get("nivel_preco")) or None,
                 "nc": "#" + COR_NIVEL[rotulo_nivel(d.get("nivel_preco"))] if rotulo_nivel(d.get("nivel_preco")) else None,
                 "x": e_detido(d.get("det")), "vd": valor_detido(d), "qn": num(d.get("qtd")) or qtd_detida(d.get("det")),
