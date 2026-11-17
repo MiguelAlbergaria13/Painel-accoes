@@ -241,7 +241,7 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("preco_hora", "Preço de (sessão, hora de Lisboa)", 16, "txt", "id"), ("preco", "Preço atual", 12, "preco", "id"),
         ("desde_ref", "Da data de referência até hoje (%)", 11, "pct", "teste"),
         ("nota", "Nota global (pesos na folha Ponderações)", 9, "nota", "global"),
-        ("nivel_preco", "Nível de preço (1 muito barata … 5 muito cara)", 12, "nivel", "global"),
+        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 12, "nivel", "global"),
         ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
         ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
         ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
@@ -529,7 +529,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V046", "17/11/2026"
+VERSAO, DATA_VERSAO = "V047", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1170,6 +1170,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
             elif fmt == "nivel":
                 c.number_format = "0.0"
                 c.font = Font(size=9, bold=True)
+                c.alignment = Alignment(horizontal="left")
     n = L0 + max(len(linhas), 1)
     faixa = lambda k: f"{let(COL[k])}{L0+1}:{let(COL[k])}{n}"
     from openpyxl.styles.differential import DifferentialStyle
@@ -1210,11 +1211,11 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     dc = let(COL["decisao"])
     sc, nvl = let(COL["so_caro"]), let(COL["nivel_preco"])
     # caras: nota global e nível de preço em azuis (claro → escuro conforme o nível); decisão em azul claro
-    for lim, cor, fcor in ((4.75, "1F4E79", "FFFFFF"), (4.5, "2F75B5", "FFFFFF"), (4.25, "9BC2E6", "1F4E79"),
-                           (-99, "BDD7EE", "1F4E79")):
+    for lim, cor, fcor in ((1.25, "1F4E79", "FFFFFF"), (1.5, "2F75B5", "FFFFFF"), (1.75, "9BC2E6", "1F4E79"),
+                           (99, "BDD7EE", "1F4E79")):
         for k in ("nota", "nivel_preco"):
             ws.conditional_formatting.add(faixa(k), FormulaRule(
-                formula=[f"AND(${sc}{L0+1}=1,${nvl}{L0+1}>={lim})"], fill=PatternFill("solid", bgColor=cor),
+                formula=[f"AND(${sc}{L0+1}=1,${nvl}{L0+1}<={lim})"], fill=PatternFill("solid", bgColor=cor),
                 font=Font(color=fcor, bold=True), stopIfTrue=True))
     # nível de preço com o texto ao lado do número (4,5 Muito cara … 1,2 Muito barata)
     for i, (cond, rot) in enumerate(rotulos_nivel()):
@@ -1718,7 +1719,7 @@ def pontuar(d, preco):
         p = 2
     if venda_prox and p > 2:
         p = 2
-    lp = n("lp")
+    lp = lp_travao(d)
     lp_fraco = lp is not None and lp < LP_MIN
     limitado = lp_fraco and p >= 3                 # seria compra, mas não rende a longo prazo -> 2.5
     alerta = txt(d.get("saude")).startswith("ALERTA")
@@ -2292,17 +2293,21 @@ PICO_LUCRO = 1.5          # lucro dos últimos 12 meses > 1,5 × a média dos ú
 PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.35, "saude": 0.20, "tend": 0.15,
                    "etf_pont": 0.60, "etf_acoes": 0.20, "etf_tend": 0.20, "t10": 0.65, "t5": 0.35,
                    "caro_j": 0.20, "caro_pe": 40.0, "caro_fcf": 0.02, "caro_etf": 0.50, "usar_tend": 1, "usar_caro": 1,
-                   "nivel_caro": 4.0}
+                   "nivel_caro": 2.0, "lp_brando": 0}
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
-    ("nivel_caro", "Nível de preço a partir do qual é cara",
-     "Nível de preço (1 barato … 5 caro) = 50% preço face ao valor justo (+30% → 1, ±0 → 3, −50% → 5) + 30% PER, o "
-     "menor entre o atual e o futuro (12 → 1, 25 → 3, 50 → 5) + 20% FCF yield (8% → 1, 3,5% → 3, 1% → 5; não nos bancos e "
-     "seguros). ETFs: média das maiores ações, pesadas. A partir deste nível conta como cara: nota, nível e decisão "
-     "a azul (a nota não muda).", "0.0"),
+    ("nivel_caro", "Nível de preço até ao qual é cara",
+     "Nível de preço (5 muito barata … 1 muito cara) = 50% preço face ao valor justo (30% abaixo → 5, igual → 3, 50% "
+     "acima → 1) + 30% PER, o menor entre o atual e o futuro (12 → 5, 25 → 3, 50 → 1) + 20% FCF yield (8% → 5, 3,5% → 3, "
+     "1% → 1; não nos bancos e seguros). ETFs: média das maiores ações, pesadas. Com este nível ou abaixo conta como "
+     "cara: nota global e nível de preço a azul (a nota não muda).", "0.0"),
 ]
 BLOCOS_PESOS = (("pont", "qual", "saude", "tend"), ("etf_pont", "etf_acoes", "etf_tend"), ("t10", "t5"))
 USAR_TEND_TXT = "Usar este quadro (x):"
 USAR_CARO_TXT = "Usar estes avisos (x):"
+LP_BRANDO_TXT = "Travão brando (x):"
+MARCA_PESOS = "pesos V047"           # folha Ponderações já com as percentagens antigas postas uma vez
+PESOS_ANTIGOS = {"pont": 0.75, "qual": 0.125, "saude": 0.125, "tend": 0.0, "etf_pont": 0.75, "etf_acoes": 0.25,
+                 "etf_tend": 0.0, "usar_tend": 0, "lp_brando": 0}     # = classificação de antes da V039
 PESOS = dict(PESOS_PROPOSTOS)
 PESOS_TXT = [  # (chave, componente, o que representa)
     ("pont", "Sinal (pontuação 1-5)",
@@ -2366,7 +2371,8 @@ def carregar_pesos(ex=None):
             r = ex.ops([{"op": "ler", "folha": FOLHA_PESOS, "rng": "E5:E8"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "E12:E14"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "E18:E19"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "B14"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "B23:E26"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "D16:E16"},
-                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D21:E21"}])
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D21:E21"},
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D28:E28"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "H1"}])
             antiga = not txt(r[3][0][0]).startswith("ETFs: tendência")   # folha da V039: sem os quadros novos
             if antiga:
                 r[1][2][0], r[2][0][0], r[2][1][0] = 0, 0, 0
@@ -2386,11 +2392,21 @@ def carregar_pesos(ex=None):
                 lidos["usar_caro"] = 1 if txt(r[6][0][1]).lower() == "x" else 0
             else:
                 lidos["usar_caro"] = 1
+            if len(r) > 7 and txt(r[7][0][0]) == LP_BRANDO_TXT:
+                lidos["lp_brando"] = 1 if txt(r[7][0][1]).lower() == "x" else 0
+            else:
+                lidos["lp_brando"] = 0
+            if len(r) > 8 and txt(r[8][0][0]) != MARCA_PESOS:         # uma só vez: as percentagens de antigamente
+                lidos.update(PESOS_ANTIGOS)
+                print("Folha Ponderações: postas as percentagens e os x da classificação antiga (75% sinal, 12,5% "
+                      "qualidade, 12,5% saúde; ETFs 75/25; sem o quadro da tendência).")
             trav = r[4] if len(r) > 4 else []
             for (k, nome, _, fm), lin in zip(TRAVOES_CARO, trav):   # travões de caro (se o quadro existir)
                 if txt(lin[0]) == nome and lin[3] not in (None, ""):
                     x = float(str(lin[3]).replace("%", "").replace(",", ".").strip())
                     lidos[k] = x / 100 if fm.endswith("%") and x > 1 else x
+                    if k == "nivel_caro" and lidos[k] > 3:          # escala antiga (5 = caro): converte
+                        lidos[k] = 6 - lidos[k]
                     if k == "nivel_caro" and not 1 <= lidos[k] <= 5:
                         raise SystemExit("Folha Ponderações: o nível de preço a partir do qual é cara tem de estar entre "
                                          "1 e 5.")
@@ -2434,19 +2450,21 @@ NIVEL_FCF = [(0.08, 1), (0.05, 2), (0.035, 3), (0.02, 4), (0.01, 5)]         # F
 
 
 def rotulos_nivel(lim=None):
-    """[(condição do Excel com {c} = célula, rótulo)] do nível de preço; 'Cara' a partir do limite da folha Ponderações."""
+    """[(condição do Excel com {c} = célula, rótulo)] do nível de preço (5 barata … 1 cara); 'Cara' até ao limite da
+    folha Ponderações."""
     lim = PESOS["nivel_caro"] if lim is None else lim
-    return [(f"{{c}}>={max(4.5, lim)}", "Muito cara"), (f"AND({{c}}>={lim},{{c}}<{max(4.5, lim)})", "Cara"),
-            (f"AND({{c}}>=3.5,{{c}}<{lim})", "Algo cara"), (f"AND({{c}}>=2.5,{{c}}<{min(3.5, lim)})", "Justa"),
-            (f"AND({{c}}>=1.75,{{c}}<2.5)", "Barata"), (f"AND(ISNUMBER({{c}}),{{c}}<1.75)", "Muito barata")]
+    mc = min(1.5, lim)
+    return [(f"AND(ISNUMBER({{c}}),{{c}}<={mc})", "Muito cara"), (f"AND({{c}}>{mc},{{c}}<={lim})", "Cara"),
+            (f"AND({{c}}>{lim},{{c}}<=2.5)", "Algo cara"), (f"AND({{c}}>{max(2.5, lim)},{{c}}<3.5)", "Justa"),
+            (f"AND({{c}}>=3.5,{{c}}<=4.25)", "Barata"), (f"{{c}}>4.25", "Muito barata")]
 
 
 def rotulo_nivel(v):
     lim = PESOS["nivel_caro"]
     if not isinstance(v, (int, float)):
         return ""
-    return ("Muito cara" if v >= max(4.5, lim) else "Cara" if v >= lim else "Algo cara" if v >= 3.5 else
-            "Justa" if v >= 2.5 else "Barata" if v >= 1.75 else "Muito barata")
+    return ("Muito cara" if v <= min(1.5, lim) else "Cara" if v <= lim else "Algo cara" if v <= 2.5 else
+            "Justa" if v < 3.5 else "Barata" if v <= 4.25 else "Muito barata")
 
 
 def nivel_preco(d):
@@ -2462,7 +2480,7 @@ def nivel_preco(d):
     partes = [(w, v) for w, v in partes if v is not None]
     if not partes:
         return None, None
-    nv = sum(w * v for w, v in partes) / sum(w for w, _ in partes)
+    nv = 6 - sum(w * v for w, v in partes) / sum(w for w, _ in partes)       # 5 = muito barata … 1 = muito cara
     det = "; ".join(x for x in (
         (f"preço {-J:+.0%} face ao valor justo".replace("+-", "−").replace("-", "−") if J is not None else None),
         (f"PER {pe:.0f}" if pe is not None else None),
@@ -2475,7 +2493,7 @@ def motivo_caro(d):
     if not PESOS.get("usar_caro", 1):               # sem x na folha Ponderações: sem avisos
         return None
     nv = d.get("nivel_preco") if isinstance(d.get("nivel_preco"), (int, float)) else None
-    if nv is None or nv < PESOS["nivel_caro"]:
+    if nv is None or nv > PESOS["nivel_caro"]:
         return None
     if txt(d.get("tipo")) == "ETF":
         return f"cara: nível de preço {nv:.1f}/5 (média das maiores ações do ETF; limite {PESOS['nivel_caro']:.1f})"
@@ -2494,6 +2512,15 @@ def _motivo_caro_antigo(d):
         return (f"cara: PER {pe:.0f} acima de {PESOS['caro_pe']:.0f}"
                 + (f" e FCF yield {fy:.1%} abaixo de {PESOS['caro_fcf']:.1%}" if fy is not None and not financeira else ""))
     return None
+
+
+def lp_travao(d):
+    """Subida anual usada no travão do longo prazo: a reta mais fraca entre desde sempre e 5 anos (como sempre foi) ou,
+    com o x do travão brando na folha Ponderações, a MELHOR entre 10 anos e 5 anos (só trava se as duas forem fracas)."""
+    n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
+    if PESOS.get("lp_brando") and (n("lp10") is not None or n("lp5") is not None):
+        return max(x for x in (n("lp10"), n("lp5")) if x is not None)
+    return n("lp")
 
 
 def nota_tendencia(lp, lp10=None, lp5=None):
@@ -2589,6 +2616,24 @@ def folha_pesos(wb):
     ws["E21"].font = Font(bold=True, size=12)
     ws["E21"].alignment = Alignment(horizontal="center", vertical="center")
     ws["C21"] = "Sem x: não há avisos de cara (nem nas ações nem nos ETFs)."
+    # travão do longo prazo
+    ws.cell(27, 2, "Travão de longo prazo (nota global no máx. 2,5 e \"Não Rent. Longo Prazo\")").font = Font(bold=True, size=12)
+    ws["C28"] = ("Sem x (como sempre foi): trava se a reta MAIS FRACA entre \"desde sempre\" e \"últimos 5 anos\" ficar "
+                 "abaixo do mínimo (G4 da folha Ações). Com x (mais brando): só trava se os últimos 10 anos E os últimos 5 "
+                 "anos ficarem os dois abaixo do mínimo — não castiga quem caiu muito há mais de 10 anos (p. ex. 2008) e "
+                 "recuperou.")
+    ws["C28"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["C28"].font = Font(size=9)
+    ws.row_dimensions[28].height = 66
+    ws["D28"] = LP_BRANDO_TXT
+    ws["D28"].alignment = Alignment(horizontal="right", vertical="center")
+    ws["D28"].font = Font(bold=True, size=9)
+    ws["E28"] = "x" if PESOS.get("lp_brando") else None
+    ws["E28"].fill, ws["E28"].border = amarelo, borda
+    ws["E28"].font = Font(bold=True, size=12)
+    ws["E28"].alignment = Alignment(horizontal="center", vertical="center")
+    ws["H1"] = MARCA_PESOS
+    ws["H1"].font = Font(size=7, color="BFBFBF")
     ws["C21"].font = Font(italic=True, size=8, color="595959")
     ws["C21"].alignment = Alignment(wrap_text=True, vertical="center")
     ws.row_dimensions[21].height = 30
@@ -2673,7 +2718,8 @@ def nota_global(d):
         q, sn = n("qual"), n("saude_n")
         nota = (PESOS["pont"] * p + PESOS["qual"] * (q if q is not None else p)
                 + PESOS["saude"] * (sn if sn is not None else p) + PESOS["tend"] * (t if t is not None else p))
-    outro = txt(d.get("saude")).startswith("ALERTA") or (lp is not None and lp < LP_MIN)
+    lpt = lp_travao(d)
+    outro = txt(d.get("saude")).startswith("ALERTA") or (lpt is not None and lpt < LP_MIN)
     if txt(d.get("tipo")) != "ETF":
         d["nivel_preco"] = nivel_preco(d)[0]
     # cara: só um aviso (azuis na nota, no nível de preço e na decisão); não trava a nota
@@ -4624,7 +4670,7 @@ const esc=s=>(s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;'
 function cartao(d){
   const dc=d.dc||'';
   const corDec=d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.pt!=null&&d.pt<3)?'#FFEB9C':cor(d.nt);
-  const azul=v=>v>=4.75?['#1F4E79','#fff']:v>=4.5?['#2F75B5','#fff']:v>=4.25?['#9BC2E6','#1F4E79']:['#BDD7EE','#1F4E79'];
+  const azul=v=>v<=1.25?['#1F4E79','#fff']:v<=1.5?['#2F75B5','#fff']:v<=1.75?['#9BC2E6','#1F4E79']:['#BDD7EE','#1F4E79'];
   const [cn,fn]=d.ca?azul(d.np):[cor(d.nt),'inherit'];
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
