@@ -529,7 +529,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V047", "17/11/2026"
+VERSAO, DATA_VERSAO = "V048", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1929,7 +1929,11 @@ def valor_justo(tk, h, preco, info):
             if len(pe) > 60:
                 lucro, metodo = float(ttm.iloc[-1]), "P/E"
                 med5 = float(ttm.iloc[-20:].mean()) if len(ttm) >= 8 else None   # lucro médio dos últimos ~5 anos
-                if med5 and med5 > 0 and lucro > PICO_LUCRO * med5:              # lucro no pico do ciclo: usa a média
+                fwd = _num(info.get("forwardEps"))
+                # lucro no pico do ciclo (opção da folha Ponderações): só se os analistas também preverem que desce
+                # (lucro previsto < 90% do atual); quem cresce de forma estrutural (p. ex. NVIDIA) não é castigado
+                if (PESOS.get("pico_lucro") and med5 and med5 > 0 and lucro > PICO_LUCRO * med5
+                        and fwd is not None and fwd < 0.9 * lucro):
                     lucro, metodo = med5, "P/E (lucro médio de 5 anos: lucro atual no pico)"
                 return float(lucro * pe.median()), metodo
     except Exception:
@@ -2293,7 +2297,7 @@ PICO_LUCRO = 1.5          # lucro dos últimos 12 meses > 1,5 × a média dos ú
 PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.35, "saude": 0.20, "tend": 0.15,
                    "etf_pont": 0.60, "etf_acoes": 0.20, "etf_tend": 0.20, "t10": 0.65, "t5": 0.35,
                    "caro_j": 0.20, "caro_pe": 40.0, "caro_fcf": 0.02, "caro_etf": 0.50, "usar_tend": 1, "usar_caro": 1,
-                   "nivel_caro": 2.0, "lp_brando": 0}
+                   "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 0}
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
     ("nivel_caro", "Nível de preço até ao qual é cara",
      "Nível de preço (5 muito barata … 1 muito cara) = 50% preço face ao valor justo (30% abaixo → 5, igual → 3, 50% "
@@ -2305,9 +2309,10 @@ BLOCOS_PESOS = (("pont", "qual", "saude", "tend"), ("etf_pont", "etf_acoes", "et
 USAR_TEND_TXT = "Usar este quadro (x):"
 USAR_CARO_TXT = "Usar estes avisos (x):"
 LP_BRANDO_TXT = "Travão brando (x):"
-MARCA_PESOS = "pesos V047"           # folha Ponderações já com as percentagens antigas postas uma vez
+PICO_TXT = "Lucro no pico (x):"
+MARCA_PESOS = "pesos V048"           # folha Ponderações já com as percentagens antigas postas uma vez
 PESOS_ANTIGOS = {"pont": 0.75, "qual": 0.125, "saude": 0.125, "tend": 0.0, "etf_pont": 0.75, "etf_acoes": 0.25,
-                 "etf_tend": 0.0, "usar_tend": 0, "lp_brando": 0}     # = classificação de antes da V039
+                 "etf_tend": 0.0, "usar_tend": 0, "lp_brando": 0, "pico_lucro": 0}   # = classificação de antes da V039
 PESOS = dict(PESOS_PROPOSTOS)
 PESOS_TXT = [  # (chave, componente, o que representa)
     ("pont", "Sinal (pontuação 1-5)",
@@ -2372,7 +2377,8 @@ def carregar_pesos(ex=None):
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "E18:E19"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "B14"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "B23:E26"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "D16:E16"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D21:E21"},
-                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D28:E28"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "H1"}])
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D28:E28"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "H1"},
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D31:E31"}])
             antiga = not txt(r[3][0][0]).startswith("ETFs: tendência")   # folha da V039: sem os quadros novos
             if antiga:
                 r[1][2][0], r[2][0][0], r[2][1][0] = 0, 0, 0
@@ -2396,6 +2402,7 @@ def carregar_pesos(ex=None):
                 lidos["lp_brando"] = 1 if txt(r[7][0][1]).lower() == "x" else 0
             else:
                 lidos["lp_brando"] = 0
+            lidos["pico_lucro"] = 1 if (len(r) > 9 and txt(r[9][0][0]) == PICO_TXT and txt(r[9][0][1]).lower() == "x") else 0
             if len(r) > 8 and txt(r[8][0][0]) != MARCA_PESOS:         # uma só vez: as percentagens de antigamente
                 lidos.update(PESOS_ANTIGOS)
                 print("Folha Ponderações: postas as percentagens e os x da classificação antiga (75% sinal, 12,5% "
@@ -2632,6 +2639,21 @@ def folha_pesos(wb):
     ws["E28"].fill, ws["E28"].border = amarelo, borda
     ws["E28"].font = Font(bold=True, size=12)
     ws["E28"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(30, 2, "Valor justo das empresas cíclicas").font = Font(bold=True, size=12)
+    ws["C31"] = ("Com x: se o lucro dos últimos 12 meses estiver mais de 50% acima da média dos últimos 5 anos E os "
+                 "analistas previrem que desce (lucro previsto < 90% do atual), o valor justo usa o lucro médio de 5 anos. "
+                 "Sem x (como antes da V041): usa sempre o lucro dos últimos 12 meses. Muda o valor justo e por isso a "
+                 "pontuação do sinal: só se aplica no ▶ ATUALIZAR (o ↻ RECLASSIFICAR não volta a descarregar os lucros).")
+    ws["C31"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["C31"].font = Font(size=9)
+    ws.row_dimensions[31].height = 66
+    ws["D31"] = PICO_TXT
+    ws["D31"].alignment = Alignment(horizontal="right", vertical="center")
+    ws["D31"].font = Font(bold=True, size=9)
+    ws["E31"] = "x" if PESOS.get("pico_lucro") else None
+    ws["E31"].fill, ws["E31"].border = amarelo, borda
+    ws["E31"].font = Font(bold=True, size=12)
+    ws["E31"].alignment = Alignment(horizontal="center", vertical="center")
     ws["H1"] = MARCA_PESOS
     ws["H1"].font = Font(size=7, color="BFBFBF")
     ws["C21"].font = Font(italic=True, size=8, color="595959")
@@ -6258,9 +6280,8 @@ def atualizar_tudo(so=None, servidor=None):
         mc = [motivo_caro(d) for d in linhas]
         mc = [m for m in mc if m]
         if mc:
-            nj = sum("valor justo" in m for m in mc)
-            print(f"Avisos de cara (decisão a azul): {len(mc)} ações — {nj} pelo valor justo, {len(mc) - nj} por PER e "
-                  "FCF yield (limites na folha Ponderações).")
+            print(f"Caras (nível de preço até {PESOS['nivel_caro']:.1f}, a azul): {len(mc)} de {len(linhas)} ações "
+                  "(limite na folha Ponderações).")
 
 
 if __name__ == "__main__":
