@@ -252,7 +252,7 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("saude_n", "Saúde financeira (0-5)", 8, "nota", "conselho"),
         ("sinal", "Médias 100/200: compra / venda próxima ou por inversão", 18, "txt", "conselho"),
         ("saude", "Saúde financeira: detalhe (ALERTA = nota global no máx. 2,5)", 16, "txt", "conselho"),
-        ("lp_txt", "Longo prazo: subida média por ano (desde sempre; 10 anos; 5 anos; 1 ano)", 15, "txt", "conselho"),
+        ("lp_txt", "Longo prazo: subida média por ano (desde sempre; 10 anos; 5 anos; 3 anos; 1 ano)", 15, "txt", "conselho"),
         ("div", "Dividendo anual por ação", 7, "preco", "fund"),
         ("div_yield", "Dividend yield (%)", 7, "pct", "fund"),
         ("payout", "Payout ratio (% do lucro)", 7, "pct", "fund"),
@@ -306,6 +306,11 @@ COLS += [("ppo", "PPO 12/26 (%)", 10, "pct", "ind"), ("ppo_sinal", "PPO: linha d
          ("etf_caro", "ETF: parte das ações conhecidas que estão caras (%)", 8, "pct", "ind"),
          ("nota_sc", "Nota global sem o travão de caro", 6, "nota", "ind"),
          ("lp5", "Longo prazo: subida média por ano nos últimos 5 anos (%)", 11, "pct", "ind"),
+         ("val_sempre", "Valorização média por ano desde sempre (%)", 9, "pct", "ind"),
+         ("val10", "Valorização média por ano em 10 anos (%)", 9, "pct", "ind"),
+         ("val5", "Valorização média por ano em 5 anos (%)", 9, "pct", "ind"),
+         ("val3", "Valorização média por ano em 3 anos (%)", 9, "pct", "ind"),
+         ("val1", "Valorização em 1 ano (%)", 9, "pct", "ind"),
          ("mom6", "Subida 6 meses (%)", 11, "pct", "ind"), ("ref6m", "Preço há 6 meses", 11, "preco", "ind"),
          ("roic", "ROIC (EBIT após impostos / capital investido) (%)", 12, "pct", "fund"),
          ("gpa", "Lucro bruto / ativo total (%)", 11, "pct", "fund"),
@@ -326,7 +331,7 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab",
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "val_sempre", "val10", "val5", "val3", "val1", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab",
            "compra", "compra_alt", "compra_pct")     # compra razoável (trigger): já não se usa; fica só a compra máxima   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
@@ -406,6 +411,11 @@ CRITERIOS_ORD = [
     ("Capitalização", "cap", True),
     ("Subida no último dia", "var1d", True),
     ("Subida no último mês", "var1m", True),
+    ("Valorização desde sempre", "val_sempre", True),
+    ("Valorização 10 anos", "val10", True),
+    ("Valorização 5 anos", "val5", True),
+    ("Valorização 3 anos", "val3", True),
+    ("Valorização 1 ano", "val1", True),
     ("Recomendação", "rec", False),
     ("Mais abaixo do máx. da semana", "dist0", False),
 ]
@@ -532,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V057", "17/11/2026"
+VERSAO, DATA_VERSAO = "V058", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1161,7 +1171,14 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws["H3"].font = Font(bold=True)
     ws["H3"].alignment = Alignment(horizontal="right", vertical="center")
     campo("I3:L3", criterio)
-    lista_val(C_ORD, [c[0] for c in CRITERIOS_ORD])
+    col_l = get_column_letter(len(COLS) + 3)          # opções do "Ordenar por" (lista > 255 caracteres)
+    for i, c in enumerate(CRITERIOS_ORD, 1):
+        ws[f"{col_l}{i}"] = c[0]
+    ws.column_dimensions[col_l].hidden = True
+    dv = DataValidation(type="list", formula1=f"${col_l}$1:${col_l}${len(CRITERIOS_ORD)}", allow_blank=False)
+    dv.error, dv.errorTitle = "Escolhe um valor da lista.", "Valor inválido"
+    ws.add_data_validation(dv)
+    dv.add(C_ORD)
     ws.merge_cells("M3:N3")
     botao(ws, "M3", "↕ ORDENAR", f"{PROTOCOLO}://ordenar/{idx}", "2E75B6", "1F4E79")
     ws[C_AT] = atualizado
@@ -1704,8 +1721,9 @@ def longo_prazo(yf, tickers):
             s5 = reta(c.iloc[-61:]) if len(c) >= 61 else None
             s1 = reta(c.iloc[-13:]) if len(c) >= 13 else None
             s10 = reta(c.iloc[-121:]) if len(c) >= 121 else None
+            s3 = reta(c.iloc[-37:]) if len(c) >= 37 else None
             usado = min(s_all, s5) if s5 is not None else s_all
-            out[t] = (usado, int(c.index[0].year), s_all, s5, s1, s10)
+            out[t] = (usado, int(c.index[0].year), s_all, s5, s1, s10, s3)
         except Exception:
             continue
     return out
@@ -3260,8 +3278,11 @@ def dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, eur, tx_orig):
         s10 = lp[5] if len(lp) > 5 else None
         d["lp10"] = s10 if s10 is not None else lp[2]      # menos de 10 anos de história: conta desde sempre
         d["lp5"] = lp[3] if lp[3] is not None else lp[2]
+        s3 = lp[6] if len(lp) > 6 else None
+        d["val_sempre"], d["val10"], d["val5"], d["val3"], d["val1"] = lp[2], s10, lp[3], s3, lp[4]
         d["lp_txt"] = (f"{f(lp[2])}/ano desde {lp[1]}" + (f" ; 10 anos {f(s10)}/ano" if s10 is not None else "")
                        + (f" ; 5 anos {f(lp[3])}/ano" if lp[3] is not None else "")
+                       + (f" ; 3 anos {f(s3)}/ano" if s3 is not None else "")
                        + (f" ; 1 ano {f(lp[4])}" if lp[4] is not None else ""))
     if ticker != ticker_orig:
         d["bolsa"] = f"{nome_bolsa(ticker)} ({moeda_prevista(ticker)}) · principal: {bolsa} {ticker_orig}"
@@ -4837,7 +4858,8 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
   document.getElementById('qdx').onclick=e=>{e.stopPropagation();document.getElementById('qd').style.display='none';};
   g.style.cursor='pointer';
   g.onclick=()=>{document.getElementById('qd').style.display='block';};
-  g.innerHTML=`Posição global · investido <b>${eur(c)}</b> · atual <b>${eur(v)}</b> · <b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>${bm(D.a.concat(D.e))!=null?` · β <b>${num(bm(D.a.concat(D.e)),2)}</b>`:''} <span style="font-size:11px;color:var(--mu)">▸ ver posição</span>`;},0);
+  const nw=t=>`<span style="white-space:nowrap">${t}</span>`,bg=bm(D.a.concat(D.e));
+  g.innerHTML=`Posição global · ${nw(`investido <b>${eur(c)}</b> ·`)}<br>${nw(`atual <b>${eur(v)}</b>`)} · ${nw(`<b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>`)}${bg!=null?` · ${nw(`β <b>${num(bg,2)}</b>`)}`:''} ${nw(`<span style="font-size:11px;color:var(--mu)">▸ ver posição</span>`)}`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
