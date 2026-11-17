@@ -301,6 +301,7 @@ COLS += [("ppo", "PPO 12/26 (%)", 10, "pct", "ind"), ("ppo_sinal", "PPO: linha d
          ("lp10", "Longo prazo: subida média por ano nos últimos 10 anos (%)", 11, "pct", "ind"),
          ("so_caro", "Cara (1): só aviso, decisão a azul", 5, "geral", "ind"),
          ("pe_fwd", "P/E futuro (lucros previstos para os próximos 12 meses)", 8, "num1", "ind"),
+         ("pe_hab", "PER habitual do próprio título (mediana de 3 anos, usado no valor justo)", 8, "num1", "ind"),
          ("etf_caro", "ETF: parte das ações conhecidas que estão caras (%)", 8, "pct", "ind"),
          ("nota_sc", "Nota global sem o travão de caro", 6, "nota", "ind"),
          ("lp5", "Longo prazo: subida média por ano nos últimos 5 anos (%)", 11, "pct", "ind"),
@@ -324,7 +325,7 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd", "etf_caro")   # corr: corretora (escondida por agora; os valores ficam)
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab")   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
          "div": 6, "div_alt": 6, "div_yield": 6, "payout": 6, "sinal": 14, "saude": 14, "lp_txt": 14}
@@ -529,7 +530,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V049", "17/11/2026"
+VERSAO, DATA_VERSAO = "V051", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1217,10 +1218,10 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
             ws.conditional_formatting.add(faixa(k), FormulaRule(
                 formula=[f"AND(${sc}{L0+1}=1,${nvl}{L0+1}<={lim})"], fill=PatternFill("solid", bgColor=cor),
                 font=Font(color=fcor, bold=True), stopIfTrue=True))
-    # nível de preço: escala de cores própria (1 muito cara azul-escuro → 3 branco → 5 muito barata verde)
+    # nível de preço: escala própria com a paleta vermelho → branco → verde (1 muito cara … 3 justa … 5 muito barata)
     ws.conditional_formatting.add(faixa("nivel_preco"), ColorScaleRule(
-        start_type="num", start_value=1, start_color="2F75B5", mid_type="num", mid_value=3, mid_color="FFFFFF",
-        end_type="num", end_value=5, end_color="63BE7B"))
+        start_type="num", start_value=1, start_color=VERMELHO, mid_type="num", mid_value=3, mid_color=BRANCO,
+        end_type="num", end_value=5, end_color=VERDE))
     # nível de preço com o texto ao lado do número (1,2 Muito cara … 4,5 Muito barata)
     for i, (cond, rot) in enumerate(rotulos_nivel()):
         dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=360 + i, formatCode=f'0.0" {rot}"'))
@@ -1889,6 +1890,9 @@ def simular_sinal(Cl, Op, i0, i1, serie, custo=None, juro=None):
     return (T + Sh * Cl[i1]) / 100 - 1
 
 
+VJ_PE_HAB = [None]       # PER habitual (mediana de 3 anos) do último valor justo calculado
+
+
 def valor_justo(tk, h, preco, info):
     """Valor justo = lucro por ação dos últimos 12 meses × P/E habitual do próprio título (mediana dos últimos 3 anos).
     Se não houver histórico de lucros, usa o número de Graham √(22,5 × lucro por ação × valor contabilístico por ação)."""
@@ -1939,7 +1943,11 @@ def valor_justo(tk, h, preco, info):
                 if (PESOS.get("pico_lucro") and med5 and med5 > 0 and lucro > PICO_LUCRO * med5
                         and fwd is not None and fwd < 0.9 * lucro):
                     lucro, metodo = med5, "P/E (lucro médio de 5 anos: lucro atual no pico)"
-                return float(lucro * pe.median()), metodo
+                VJ_PE_HAB[0] = float(pe.median())
+                pm = VJ_PE_HAB[0]
+                if PESOS.get("cap_pe_sinal") and pm > PESOS["pe_hab_max"]:      # opção: PER habitual limitado
+                    pm, metodo = PESOS["pe_hab_max"], metodo + f" (PER habitual limitado a {PESOS['pe_hab_max']:.0f})"
+                return float(lucro * pm), metodo
     except Exception:
         pass
     if REF is not None:                         # numa data passada não há o lucro e o valor contabilístico dessa data
@@ -2301,12 +2309,14 @@ PICO_LUCRO = 1.5          # lucro dos últimos 12 meses > 1,5 × a média dos ú
 PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.35, "saude": 0.20, "tend": 0.15,
                    "etf_pont": 0.60, "etf_acoes": 0.20, "etf_tend": 0.20, "t10": 0.65, "t5": 0.35,
                    "caro_j": 0.20, "caro_pe": 40.0, "caro_fcf": 0.02, "caro_etf": 0.50, "usar_tend": 1, "usar_caro": 1,
-                   "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 0}
+                   "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 0,
+                   "pe_hab_max": 35.0, "cap_pe_sinal": 0}
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
     ("nivel_caro", "Nível de preço até ao qual é cara",
-     "Nível de preço (5 muito barata … 1 muito cara) = 50% preço face ao valor justo (30% abaixo → 5, igual → 3, 50% "
-     "acima → 1) + 30% PER, o menor entre o atual e o futuro (12 → 5, 25 → 3, 50 → 1) + 20% FCF yield (8% → 5, 3,5% → 3, "
-     "1% → 1; não nos bancos e seguros). ETFs: média das maiores ações, pesadas. Com este nível ou abaixo conta como "
+     "Nível de preço (5 muito barata … 1 muito cara) = 40% preço face ao valor justo, com o PER habitual limitado (30% "
+     "abaixo → 5, igual → 3, 50% acima → 1) + 35% PER, o menor entre o atual e o futuro (10 → 5, 22 → 3 (média do "
+     "mercado), 30 → 2, 40 → 1) + 25% FCF yield (7% → 5, 3,5% → 3, 2,5% → 2, "
+     "1,5% → 1; não nos bancos e seguros). ETFs: média das maiores ações, pesadas. Com este nível ou abaixo conta como "
      "cara: nota global e nível de preço a azul (a nota não muda).", "0.0"),
 ]
 BLOCOS_PESOS = (("pont", "qual", "saude", "tend"), ("etf_pont", "etf_acoes", "etf_tend"), ("t10", "t5"))
@@ -2314,6 +2324,7 @@ USAR_TEND_TXT = "Usar este quadro (x):"
 USAR_CARO_TXT = "Usar estes avisos (x):"
 LP_BRANDO_TXT = "Travão brando (x):"
 PICO_TXT = "Lucro no pico (x):"
+CAP_TXT = "Também no sinal (x):"
 MARCA_PESOS = "pesos V048"           # folha Ponderações já com as percentagens antigas postas uma vez
 PESOS_ANTIGOS = {"pont": 0.75, "qual": 0.125, "saude": 0.125, "tend": 0.0, "etf_pont": 0.75, "etf_acoes": 0.25,
                  "etf_tend": 0.0, "usar_tend": 0, "lp_brando": 0, "pico_lucro": 0}   # = classificação de antes da V039
@@ -2382,7 +2393,7 @@ def carregar_pesos(ex=None):
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "B23:E26"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "D16:E16"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D21:E21"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D28:E28"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "H1"},
-                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D31:E31"}])
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "D31:E31"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "B34:E35"}])
             antiga = not txt(r[3][0][0]).startswith("ETFs: tendência")   # folha da V039: sem os quadros novos
             if antiga:
                 r[1][2][0], r[2][0][0], r[2][1][0] = 0, 0, 0
@@ -2406,6 +2417,12 @@ def carregar_pesos(ex=None):
                 lidos["lp_brando"] = 1 if txt(r[7][0][1]).lower() == "x" else 0
             else:
                 lidos["lp_brando"] = 0
+            if len(r) > 10 and txt(r[10][0][0]) == "PER habitual máximo":
+                try:
+                    lidos["pe_hab_max"] = float(str(r[10][0][3]).replace(",", "."))
+                except (TypeError, ValueError):
+                    pass
+                lidos["cap_pe_sinal"] = 1 if (txt(r[10][1][2]) == CAP_TXT and txt(r[10][1][3]).lower() == "x") else 0
             lidos["pico_lucro"] = 1 if (len(r) > 9 and txt(r[9][0][0]) == PICO_TXT and txt(r[9][0][1]).lower() == "x") else 0
             if len(r) > 8 and txt(r[8][0][0]) != MARCA_PESOS:         # uma só vez: as percentagens de antigamente
                 lidos.update(PESOS_ANTIGOS)
@@ -2456,8 +2473,9 @@ def _escala(v, pontos):
 
 
 NIVEL_J = [(0.30, 1), (0.10, 2), (-0.10, 3), (-0.30, 4), (-0.50, 5)]        # preço face ao valor justo
-NIVEL_PE = [(12, 1), (18, 2), (25, 3), (35, 4), (50, 5)]                     # PER (o menor: atual / futuro)
-NIVEL_FCF = [(0.08, 1), (0.05, 2), (0.035, 3), (0.02, 4), (0.01, 5)]         # FCF yield
+# (escala interna 1 barato … 5 caro; o nível mostrado é 6 − isto). "Justa" (3) = mais ou menos a média do mercado
+NIVEL_PE = [(10, 1), (15, 2), (22, 3), (30, 4), (40, 5)]                     # PER (o menor: atual / futuro)
+NIVEL_FCF = [(0.07, 1), (0.05, 2), (0.035, 3), (0.025, 4), (0.015, 5)]       # FCF yield
 
 
 def rotulos_nivel(lim=None):
@@ -2479,15 +2497,20 @@ def rotulo_nivel(v):
 
 
 def nivel_preco(d):
-    """Nível de preço 1 (barato) a 5 (caro) de uma ação: 50% preço face ao valor justo, 30% PER (o menor entre o atual
-    e o futuro), 20% FCF yield (não nos bancos / seguros). (nível, explicação)."""
+    """Nível de preço 5 (muito barata) a 1 (muito cara) de uma ação: 40% preço face ao valor justo (PER habitual
+    limitado), 35% PER (o menor entre o atual e o futuro), 25% FCF yield (não nos bancos / seguros). (nível, explicação)."""
     n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
     J, fy = n("justo_pct"), n("fcf_yield")
+    # valor justo com o PER habitual limitado (evita a "bolha do próprio histórico", p. ex. NVIDIA); se o sinal já usa
+    # o limite, o valor justo já vem limitado
+    ph, vj, pr = n("pe_hab"), n("justo"), n("preco")
+    if ph and vj and pr and ph > PESOS["pe_hab_max"] and not PESOS.get("cap_pe_sinal"):
+        J = vj * PESOS["pe_hab_max"] / ph / pr - 1
     pes = [x for x in (n("pe"), n("pe_fwd")) if x is not None]
     pe = min(pes) if pes else None
     if txt(d.get("saude")).startswith("não se aplica"):
         fy = None
-    partes = [(0.5, _escala(J, NIVEL_J)), (0.3, _escala(pe, NIVEL_PE)), (0.2, _escala(fy, NIVEL_FCF))]
+    partes = [(0.4, _escala(J, NIVEL_J)), (0.35, _escala(pe, NIVEL_PE)), (0.25, _escala(fy, NIVEL_FCF))]
     partes = [(w, v) for w, v in partes if v is not None]
     if not partes:
         return None, None
@@ -2658,6 +2681,30 @@ def folha_pesos(wb):
     ws["E31"].fill, ws["E31"].border = amarelo, borda
     ws["E31"].font = Font(bold=True, size=12)
     ws["E31"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(33, 2, "PER habitual máximo no valor justo").font = Font(bold=True, size=12)
+    ws["C34"] = ("O valor justo é o lucro dos últimos 12 meses × o PER habitual do próprio título (mediana de 3 anos). Nas "
+                 "empresas que o mercado pagou muito caro (p. ex. NVIDIA), esse PER é enorme e o valor justo sai "
+                 "exagerado. O nível de preço usa sempre o PER habitual limitado a este valor. Com x em \"Também no "
+                 "sinal\", o limite aplica-se também ao valor justo da pontuação do sinal (só no ▶ ATUALIZAR; muda a "
+                 "classificação de algumas ações de crescimento).")
+    ws["C34"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["C34"].font = Font(size=9)
+    ws.row_dimensions[34].height = 80
+    ws["B34"] = "PER habitual máximo"
+    ws["B34"].font = Font(bold=True)
+    ws["D34"] = PESOS_PROPOSTOS["pe_hab_max"]
+    ws["D34"].font = Font(color="808080")
+    ws["E34"] = PESOS["pe_hab_max"]
+    ws["E34"].fill, ws["E34"].border = amarelo, borda
+    ws["E34"].font = Font(bold=True, size=12)
+    ws["E34"].alignment = ws["D34"].alignment = Alignment(horizontal="center", vertical="center")
+    ws["D35"] = CAP_TXT
+    ws["D35"].alignment = Alignment(horizontal="right", vertical="center")
+    ws["D35"].font = Font(bold=True, size=9)
+    ws["E35"] = "x" if PESOS.get("cap_pe_sinal") else None
+    ws["E35"].fill, ws["E35"].border = amarelo, borda
+    ws["E35"].font = Font(bold=True, size=12)
+    ws["E35"].alignment = Alignment(horizontal="center", vertical="center")
     ws["H1"] = MARCA_PESOS
     ws["H1"].font = Font(size=7, color="BFBFBF")
     ws["C21"].font = Font(italic=True, size=8, color="595959")
@@ -3200,13 +3247,16 @@ def dados_titulo(yf, nome, codigo, ticker_orig, bolsa, etf, hist, eur, tx_orig):
         nota = "sem dados no Yahoo"
     if not etf and preco and h is not None and len(h) > 60:
         if conv != 1.0 and h_orig is not None and _num(info.get("regularMarketPrice") or info.get("currentPrice")):
+            VJ_PE_HAB[0] = None
             justo, metodo = valor_justo(tk, h_orig, _num(info.get("regularMarketPrice") or info.get("currentPrice")),
                                         info)
             justo = justo * conv if justo else None
         else:
+            VJ_PE_HAB[0] = None
             justo, metodo = valor_justo(tk, h, float(preco), info)
         if justo:
-            d.update(justo=justo, justo_pct=justo / float(preco) - 1)
+            d.update(justo=justo, justo_pct=justo / float(preco) - 1,
+                     pe_hab=VJ_PE_HAB[0] if metodo and metodo.startswith("P/E") else None)
             if metodo == "Graham":
                 nota = (nota + "; " if nota else "") + "valor justo pelo número de Graham"
             elif metodo and "pico" in metodo:
@@ -4688,8 +4738,8 @@ if(D.gh&&D.gh.t){
 let aba='A';
 const corNivel=v=>{const m=(a,b,t)=>Math.round(a+(b-a)*t),h=(r,g,b)=>'#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
   const t=Math.max(1,Math.min(5,v));
-  const c=t<=3?[m(0x2F,255,(t-1)/2),m(0x75,255,(t-1)/2),m(0xB5,255,(t-1)/2)]:[m(255,0x63,(t-3)/2),m(255,0xBE,(t-3)/2),m(255,0x7B,(t-3)/2)];
-  return [h(...c),t<1.6?'#fff':'#1c1e21'];};
+  const c=t<=3?[m(0xF8,255,(t-1)/2),m(0x69,255,(t-1)/2),m(0x6B,255,(t-1)/2)]:[m(255,0x63,(t-3)/2),m(255,0xBE,(t-3)/2),m(255,0x7B,(t-3)/2)];
+  return [h(...c),'#1c1e21'];};
 const cor=v=>v==null?'#d0d3d8':v>=4.5?'#63BE7B':v>=3.75?'#A9D18E':v>=2.75?'#E2EFDA':v>=2.25?'#F4B183':v>=1.5?'#FFEB9C':'#F8696B';
 const num=(v,c)=>v==null?'–':v.toLocaleString('pt-PT',{minimumFractionDigits:c,maximumFractionDigits:c});
 const pct=v=>v==null?'':(v>0?'+':'')+num(v*100,1)+'%';
