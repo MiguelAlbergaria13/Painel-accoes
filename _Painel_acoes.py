@@ -242,7 +242,7 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("desde_ref", "Da data de referência até hoje (%)", 11, "pct", "teste"),
         ("nota", "Nota global (pesos na folha Ponderações)", 9, "nota", "global"),
         ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
-        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 15, "nivel", "global"),
+        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 19, "nivel", "global"),
         ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
         ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
         ("etf_desc", "Descrição do ETF", 40, "txt", "id"),
@@ -531,7 +531,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V053", "17/11/2026"
+VERSAO, DATA_VERSAO = "V054", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1225,7 +1225,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     for i, (cond, rot) in enumerate(rotulos_nivel()):
         dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=360 + i, formatCode=f'0.0" {rot}"'),
                                 fill=_PF(bgColor=COR_NIVEL[rot], fill_type="solid"),
-                                font=Font(bold=True, color="FFFFFF" if rot in ("Muito cara", "Muito barata") else "1C1E21"))
+                                font=Font(bold=True, color="FFFFFF" if "muito" in rot else "1C1E21"))
         ws.conditional_formatting.add(faixa("nivel_preco"), Rule(type="expression", dxf=dxf,
                                                                  formula=[cond.format(c=f"${nvl}{L0+1}")]))
     ws.conditional_formatting.add(faixa("decisao"), FormulaRule(
@@ -2483,21 +2483,21 @@ def rotulos_nivel(lim=None):
     folha Ponderações."""
     lim = PESOS["nivel_caro"] if lim is None else lim
     mc = min(1.5, lim)
-    return [(f"AND(ISNUMBER({{c}}),{{c}}<={mc})", "Muito cara"), (f"AND({{c}}>{mc},{{c}}<={lim})", "Cara"),
-            (f"AND({{c}}>{lim},{{c}}<=2.5)", "Algo cara"), (f"AND({{c}}>{max(2.5, lim)},{{c}}<3.5)", "Justa"),
-            (f"AND({{c}}>=3.5,{{c}}<=4.25)", "Barata"), (f"AND(ISNUMBER({{c}}),{{c}}>4.25)", "Muito barata")]
+    return [(f"AND(ISNUMBER({{c}}),{{c}}<={mc})", "Preço muito caro"), (f"AND({{c}}>{mc},{{c}}<={lim})", "Preço caro"),
+            (f"AND({{c}}>{lim},{{c}}<=2.5)", "Preço algo caro"), (f"AND({{c}}>{max(2.5, lim)},{{c}}<3.5)", "Preço justo"),
+            (f"AND({{c}}>=3.5,{{c}}<=4.25)", "Preço barato"), (f"AND(ISNUMBER({{c}}),{{c}}>4.25)", "Preço muito barato")]
 
 
-COR_NIVEL = {"Muito cara": "E0484B", "Cara": "F8A5A6", "Algo cara": "FCE4D6", "Justa": "FFFFFF",
-             "Barata": "C6E5B3", "Muito barata": "4E9F5D"}
+COR_NIVEL = {"Preço muito caro": "E0484B", "Preço caro": "F8A5A6", "Preço algo caro": "FCE4D6", "Preço justo": "FFFFFF",
+             "Preço barato": "C6E5B3", "Preço muito barato": "4E9F5D"}
 
 
 def rotulo_nivel(v):
     lim = PESOS["nivel_caro"]
     if not isinstance(v, (int, float)):
         return ""
-    return ("Muito cara" if v <= min(1.5, lim) else "Cara" if v <= lim else "Algo cara" if v <= 2.5 else
-            "Justa" if v < 3.5 else "Barata" if v <= 4.25 else "Muito barata")
+    return ("Preço muito caro" if v <= min(1.5, lim) else "Preço caro" if v <= lim else "Preço algo caro" if v <= 2.5 else
+            "Preço justo" if v < 3.5 else "Preço barato" if v <= 4.25 else "Preço muito barato")
 
 
 def nivel_preco(d):
@@ -4759,7 +4759,7 @@ function cartao(d){
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
-  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/Muito/.test(d.nr||'')?'#fff':'#1c1e21'}">preço ${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/muito/.test(d.nr||'')?'#fff':'#1c1e21'}">${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compra</div><div>Máxima (ordem limite)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
