@@ -241,8 +241,8 @@ COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt
         ("preco_hora", "Preço de (sessão, hora de Lisboa)", 16, "txt", "id"), ("preco", "Preço atual", 12, "preco", "id"),
         ("desde_ref", "Da data de referência até hoje (%)", 11, "pct", "teste"),
         ("nota", "Nota global (pesos na folha Ponderações)", 9, "nota", "global"),
-        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 12, "nivel", "global"),
         ("decisao", "Decisão (pela nota global)", 14, "txt", "global"),
+        ("nivel_preco", "Nível de preço (5 muito barata … 1 muito cara)", 12, "nivel", "global"),
         ("pont", "Pontuação do sinal (5 = compra forte … 1 = venda)", 10, "pont", "conselho"),
         ("etf_acoes", "Nota ponderada das ações do ETF", 9, "nota", "global"),
         ("etf_desc", "Descrição do ETF", 40, "txt", "id"),
@@ -529,7 +529,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V048", "17/11/2026"
+VERSAO, DATA_VERSAO = "V049", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1213,11 +1213,15 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     # caras: nota global e nível de preço em azuis (claro → escuro conforme o nível); decisão em azul claro
     for lim, cor, fcor in ((1.25, "1F4E79", "FFFFFF"), (1.5, "2F75B5", "FFFFFF"), (1.75, "9BC2E6", "1F4E79"),
                            (99, "BDD7EE", "1F4E79")):
-        for k in ("nota", "nivel_preco"):
+        for k in ("nota",):
             ws.conditional_formatting.add(faixa(k), FormulaRule(
                 formula=[f"AND(${sc}{L0+1}=1,${nvl}{L0+1}<={lim})"], fill=PatternFill("solid", bgColor=cor),
                 font=Font(color=fcor, bold=True), stopIfTrue=True))
-    # nível de preço com o texto ao lado do número (4,5 Muito cara … 1,2 Muito barata)
+    # nível de preço: escala de cores própria (1 muito cara azul-escuro → 3 branco → 5 muito barata verde)
+    ws.conditional_formatting.add(faixa("nivel_preco"), ColorScaleRule(
+        start_type="num", start_value=1, start_color="2F75B5", mid_type="num", mid_value=3, mid_color="FFFFFF",
+        end_type="num", end_value=5, end_color="63BE7B"))
+    # nível de preço com o texto ao lado do número (1,2 Muito cara … 4,5 Muito barata)
     for i, (cond, rot) in enumerate(rotulos_nivel()):
         dxf = DifferentialStyle(numFmt=NumberFormat(numFmtId=360 + i, formatCode=f'0.0" {rot}"'))
         ws.conditional_formatting.add(faixa("nivel_preco"), Rule(type="expression", dxf=dxf,
@@ -1234,7 +1238,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
         formula=[f"AND(ISNUMBER(${pl}{L0+1}),${pl}{L0+1}<3)"], fill=PatternFill("solid", bgColor="FFEB9C"),
         stopIfTrue=True))
     for lim, cor in ((4.5, "63BE7B"), (3.75, "A9D18E"), (2.75, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
-        for k in ("nota", "decisao", "nivel_preco"):  # nota global, decisão e nível (não caras): cores da nota global
+        for k in ("nota", "decisao"):                 # nota global e decisão: as cores da pontuação, por faixas
             ws.conditional_formatting.add(faixa(k), FormulaRule(
                 formula=[f"AND(ISNUMBER(${gl}{L0+1}),${gl}{L0+1}>={lim})"], fill=PatternFill("solid", bgColor=cor),
                 font=Font(bold=lim >= 4.5 or k == "nota"), stopIfTrue=True))
@@ -4682,6 +4686,10 @@ if(D.gh&&D.gh.t){
   }
 })();
 let aba='A';
+const corNivel=v=>{const m=(a,b,t)=>Math.round(a+(b-a)*t),h=(r,g,b)=>'#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  const t=Math.max(1,Math.min(5,v));
+  const c=t<=3?[m(0x2F,255,(t-1)/2),m(0x75,255,(t-1)/2),m(0xB5,255,(t-1)/2)]:[m(255,0x63,(t-3)/2),m(255,0xBE,(t-3)/2),m(255,0x7B,(t-3)/2)];
+  return [h(...c),t<1.6?'#fff':'#1c1e21'];};
 const cor=v=>v==null?'#d0d3d8':v>=4.5?'#63BE7B':v>=3.75?'#A9D18E':v>=2.75?'#E2EFDA':v>=2.25?'#F4B183':v>=1.5?'#FFEB9C':'#F8696B';
 const num=(v,c)=>v==null?'–':v.toLocaleString('pt-PT',{minimumFractionDigits:c,maximumFractionDigits:c});
 const pct=v=>v==null?'':(v>0?'+':'')+num(v*100,1)+'%';
@@ -4697,7 +4705,7 @@ function cartao(d){
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
   <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
-  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.ca?cn:'#eceff3'};color:${d.ca?fn:'#3c4043'}">preço ${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${corNivel(d.np)[0]};color:${corNivel(d.np)[1]}">preço ${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compras</div><div>Trigger (≈ −10%)<b>${pr(d.cr)} <small>${pct(d.crp)}</small></b></div>
