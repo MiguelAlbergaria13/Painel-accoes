@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V058", "17/11/2026"
+VERSAO, DATA_VERSAO = "V059", "17/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -4858,8 +4858,10 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
   document.getElementById('qdx').onclick=e=>{e.stopPropagation();document.getElementById('qd').style.display='none';};
   g.style.cursor='pointer';
   g.onclick=()=>{document.getElementById('qd').style.display='block';};
-  const nw=t=>`<span style="white-space:nowrap">${t}</span>`,bg=bm(D.a.concat(D.e));
-  g.innerHTML=`Posição global · ${nw(`investido <b>${eur(c)}</b> ·`)}<br>${nw(`atual <b>${eur(v)}</b>`)} · ${nw(`<b style="color:${cor}">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>`)}${bg!=null?` · ${nw(`β <b>${num(bg,2)}</b>`)}`:''} ${nw(`<span style="font-size:11px;color:var(--mu)">▸ ver posição</span>`)}`;},0);
+  const bg=bm(D.a.concat(D.e));
+  g.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:baseline"><b>Posição global</b><span style="font-size:11px;color:var(--mu)">▸ ver posição</span></div>`
+    +`<div>Investido/atual: <b style="white-space:nowrap">${eur(c)}</b> / <b style="white-space:nowrap">${eur(v)}</b></div>`
+    +`<div>Resultado: <b style="color:${cor};white-space:nowrap">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>${bg!=null?` <span style="white-space:nowrap">· β <b>${num(bg,2)}</b></span>`:''}</div>`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
@@ -5356,7 +5358,7 @@ def _garantir_workflow(cfg):
         pass
 
 
-def publicar_github(html, versao=""):
+def publicar_github(html, versao="", dados=None):
     """Envia a página (cifrada) para o repositório; o GitHub Pages mostra-a em GH_URL ao fim de ~1 minuto. Depois de
     um ▶ ATUALIZAR envia também as definições (cifradas) e o script, para as atualizações automáticas no GitHub."""
     cfg = _config_github()
@@ -5370,6 +5372,16 @@ def publicar_github(html, versao=""):
         _enviar_github(cfg, "index.html", pag)                       # também no main (se o Pages publicar o main)
         _enviar_github(cfg, "versao.txt", versao)
         _enviar_github(cfg, "ocultos.enc", _cifrar(json.dumps(sorted(OCULTOS)), cfg["senha"]))
+        if dados:                                # os dados do PC passam a ser a base das atualizações de preços no
+            try:                                 # GitHub (senão elas usavam a última completa do servidor)
+                dd = {"a": dados[0], "e": dados[1], "quando": f"{datetime.now():%d/%m/%Y %H:%M}"}
+                _enviar_github(cfg, "dados.enc", _cifrar(json.dumps(
+                    dd, ensure_ascii=False, default=lambda o: _json_num(o) if isinstance(o, (int, float)) or
+                    type(o).__module__ == "numpy" else str(o)), cfg["senha"]), GH_RAMO_PAGINA)
+            except Exception as e:
+                print("   aviso: dados para as atualizações automáticas não enviados:", e)
+        with open(os.path.abspath(__file__), encoding="utf-8") as f:   # script sempre (o GitHub corre esta versão)
+            _enviar_github(cfg, "_Painel_acoes.py", f.read())
         if SYNC:
             defs = dict(SYNC, token_botao=cfg.get("token_botao"), enviado=f"{datetime.now():%d/%m/%Y %H:%M}")
             _enviar_github(cfg, "config.enc", _cifrar(json.dumps(defs, ensure_ascii=False, default=_json_num), cfg["senha"]))
@@ -5378,8 +5390,6 @@ def publicar_github(html, versao=""):
                     json.dump(SYNC, f, ensure_ascii=False, default=_json_num)
             except Exception:
                 pass
-            with open(os.path.abspath(__file__), encoding="utf-8") as f:
-                _enviar_github(cfg, "_Painel_acoes.py", f.read())
             _garantir_workflow(cfg)
         print(f"Página publicada: {GH_URL}  (fica visível ao fim de 1-2 minutos)"
               + ("; definições enviadas para as atualizações automáticas" if SYNC else ""))
@@ -5474,7 +5484,7 @@ def gerar_html(linhas, etfs, texto):
         with open(FICH_HTML, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"Página para o telemóvel: {os.path.basename(FICH_HTML)}")
-        publicar_github(html, versao)
+        publicar_github(html, versao, (linhas, etfs))
     except Exception as e:
         print("   aviso: página para o telemóvel não gravada:", e)
         registo(f"telemóvel: {e}")
