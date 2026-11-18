@@ -552,7 +552,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V071", "18/11/2026"
+VERSAO, DATA_VERSAO = "V074", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -6634,6 +6634,28 @@ def atualizar_tudo(so=None, servidor=None):
 FICH_TEMPOS = os.path.join(PASTA, "_Painel_acoes_tempos.json")   # durações das últimas execuções (estimativa)
 
 
+CANCELAR = {"pedido": False, "critico": 0}       # botão Cancelar da janela de progresso
+
+
+def _zona_critica(f):
+    """Enquanto se escreve no Excel / se grava o ficheiro, um Cancelar espera pelo fim dessa escrita
+    (para o livro nunca ficar a meio); logo a seguir, o script para."""
+    def g(*a, **k):
+        CANCELAR["critico"] += 1
+        try:
+            return f(*a, **k)
+        finally:
+            CANCELAR["critico"] -= 1
+            if CANCELAR["pedido"] and CANCELAR["critico"] == 0:
+                registo("cancelado pelo utilizador")
+                os._exit(2)
+    return g
+
+
+Excel.ops = _zona_critica(Excel.ops)
+guardar_e_abrir = _zona_critica(guardar_e_abrir)
+
+
 def acao_do_botao(arg):
     """(chave, descrição) da ação pedida, para a janela de progresso e para a estimativa do tempo."""
     a = arg.lower()
@@ -6670,10 +6692,12 @@ def com_janela_progresso(funcao):
     fila = queue.Queue()
     estado = {"fim": None, "erro": False}
 
+    dec2 = re.compile(r"(?<![\w.])(-?\d+\.\d{3,})(?![\w.])")    # só na janela: números com 2 casas
+
     class Escritor:
         def write(self, txt_):
             if txt_:
-                fila.put(txt_.replace("\r", ""))
+                fila.put(dec2.sub(lambda m: f"{float(m.group(1)):.2f}", txt_.replace("\r", "")))
 
         def flush(self):
             pass
@@ -6737,6 +6761,22 @@ def com_janela_progresso(funcao):
     baixo.pack(fill="x")
     bt = ttk.Button(baixo, text="Fechar", command=raiz.destroy, state="disabled")
     bt.pack(side="right")
+
+    def cancelar():
+        from tkinter import messagebox
+        if estado["fim"] is not None or CANCELAR["pedido"]:
+            return
+        if not messagebox.askyesno("Cancelar", f"Cancelar «{titulo}»?\n\nO que já foi escrito no Excel fica; "
+                                   "o resto não é feito.", parent=raiz):
+            return
+        CANCELAR["pedido"] = True
+        if CANCELAR["critico"] == 0:
+            registo("cancelado pelo utilizador")
+            os._exit(2)
+        bc.configure(state="disabled", text="A cancelar...")
+        print("\nA cancelar: espero só que acabe a escrita no Excel que está a decorrer...")
+    bc = ttk.Button(baixo, text="Cancelar", command=cancelar)
+    bc.pack(side="right", padx=(0, 8))
     manter = {"sim": False}
     bm = ttk.Button(baixo, text="Manter aberta", command=lambda: manter.update(sim=True) or bm.pack_forget())
     t0 = time.time()
@@ -6780,6 +6820,7 @@ def com_janela_progresso(funcao):
         barra.configure(mode="determinate")
         barra["value"] = 1000
         bt.configure(state="normal")
+        bc.pack_forget()
         if estado["erro"]:
             rot.configure(text=f"Parou ao fim de {mmss(dur)}: vê as mensagens acima.", foreground="#C00000")
             raiz.bell()
@@ -6792,8 +6833,7 @@ def com_janela_progresso(funcao):
                     json.dump(tempos, f)
             except Exception:
                 pass
-            estado["fecha"] = agora + 4
-            bm.pack(side="right", padx=(0, 8))
+            estado["fecha"] = agora                     # sem erro: fecha logo no fim
         if manter["sim"]:
             rot.configure(text=f"Concluído em {mmss(dur)}.")
             return
