@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V068", "18/11/2026"
+VERSAO, DATA_VERSAO = "V069", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -813,10 +813,13 @@ def folha_carteira(wb, linhas, etfs):
             ws.cell(i, 3, round(l, 2)).number_format = '+"€" #,##0.00;-"€" #,##0.00'
             ws.cell(i, 3).font = Font(bold=True, color="00A050" if l >= 0 else "C00000")
             ws.cell(i, 4, round(abs(l), 2)).number_format = '"€" #,##0.00'
+            sg, tot_lp = ("+" if l >= 0 else "−"), sum(abs(x[4]) for x in lp)
+            ws.cell(i, 2, f"{nome}: {sg}€ {abs(l):,.0f} ({sg}{abs(l) / tot_lp * 100:.1f}%)"
+                    .replace(",", " ").replace(".", ",")).font = Font(color="808080", size=8)
         p3 = PieChart()
         p3.title = "Lucros (verde) e prejuízos (vermelho) por título"
         p3.add_data(Reference(ws, min_col=4, min_row=r1 + 2, max_row=r1 + 1 + len(lp)), titles_from_data=False)
-        p3.set_categories(Reference(ws, min_col=1, min_row=r1 + 2, max_row=r1 + 1 + len(lp)))
+        p3.set_categories(Reference(ws, min_col=2, min_row=r1 + 2, max_row=r1 + 1 + len(lp)))
         VERDES = ["1E8E3E", "34A853", "5BB974", "81C995", "0D652D", "A8DAB5"]
         VERMELHOS = ["D93025", "EA4335", "EE675C", "F28B82", "A50E0E", "F6AEA9"]
         ig = iv = 0
@@ -829,7 +832,10 @@ def folha_carteira(wb, linhas, etfs):
             pt.graphicalProperties.solidFill = cor
             pt.graphicalProperties.line.solidFill = "FFFFFF"
             p3.series[0].dPt.append(pt)
-        p3.dataLabels = rotulos()
+        dl = DataLabelList()                            # rótulos com o sinal: prejuízos com € e % negativos
+        dl.showCatName, dl.showVal, dl.showPercent, dl.showSerName, dl.showLeaderLines = True, False, False, False, True
+        p3.dataLabels = dl
+        p3.legend = None
         p3.width, p3.height = 16, 11
         ws.add_chart(p3, "Y26")
 
@@ -5040,7 +5046,7 @@ function tarte(itens,titulo,lp){
     arcos+=itens.length===1?`<circle cx="${cx}" cy="${cy}" r="${(R+r)/2}" fill="none" stroke="${cor}" stroke-width="${R-r}"/>`:
       `<path d="M${P(a0,R)} A${R} ${R} 0 ${g} 1 ${P(a1,R)} L${P(a1,r)} A${r} ${r} 0 ${g} 0 ${P(a0,r)}Z" fill="${cor}" stroke="var(--card)" stroke-width="1.5"/>`;
     a0=a1;});
-  const leg=itens.map((x,i)=>`<div class="lg"><i style="background:${x.cor||CORES[i%CORES.length]}"></i><span>${escH(x.n)}</span><b${lp?` style="color:${x.s>0?'#1e8e3e':'#d93025'}"`:''}>${lp?(x.s>0?'+':'−'):''}${eur(x.v)} (${num(x.v/tot*100,1)}%)</b></div>`).join('');
+  const leg=itens.map((x,i)=>`<div class="lg"><i style="background:${x.cor||CORES[i%CORES.length]}"></i><span>${escH(x.n)}</span><b${lp?` style="color:${x.s>0?'#1e8e3e':'#d93025'}"`:''}>${lp?(x.s>0?'+':'−'):''}${eur(x.v)} (${lp&&x.s<0?'−':''}${num(x.v/tot*100,1)}%)</b></div>`).join('');
   return `<section class="gr"><h3>${titulo}</h3><svg viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="${escH(titulo)}">${arcos}
     <text x="110" y="106" text-anchor="middle" font-size="11" fill="var(--mu)">${lp?'saldo':'total'}</text><text x="110" y="124" text-anchor="middle" font-size="14" font-weight="700" fill="${lp?(liq>=0?'#1e8e3e':'#d93025'):'var(--tx)'}">${lp?(liq>=0?'+':'−'):''}${eur(lp?Math.abs(liq):tot)}</text></svg>${leg}</section>`;
 }
