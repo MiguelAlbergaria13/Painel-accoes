@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V065", "18/11/2026"
+VERSAO, DATA_VERSAO = "V067", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -614,6 +614,7 @@ def totais_carteira(linhas, etfs):
 
 
 FICH_BETAS = os.path.join(PASTA, "_Painel_acoes_betas.json")
+FICH_COPIA = os.path.join(PASTA, "_Painel_acoes_copia_seguranca.xlsx")   # o livro antes da última ordenação/preços
 
 
 def completar_betas(linhas, etfs):
@@ -3809,6 +3810,10 @@ foreach ($o in $req.ops) {
     }
     [void]$res.Add($out); continue
   }
+  if ($o.op -eq 'copia') {
+    try { $wb.SaveCopyAs([string]$o.destino) } catch {}
+    [void]$res.Add($null); continue
+  }
   if ($o.op -eq 'reaplicar_filtro') {
     try {
       if ($o.folha -is [string]) { $sh = $wb.Worksheets.Item($o.folha) } else { $sh = $wb.Worksheets.Item([int]$o.folha) }
@@ -3846,7 +3851,7 @@ foreach ($o in $req.ops) {
           } catch {}
         }
         $vis = 0; try { $vis = $sh.AutoFilter.Range.Columns.Item(1).SpecialCells(12).Count } catch {}
-        if ($vis -le 1) { try { if ($sh.FilterMode) { $sh.ShowAllData() } } catch {}; [void]$semLinhas.Add($it.folha) }
+        if ($vis -eq 1) { [void]$semLinhas.Add($it.folha) }
       } catch {}
     }
     [void]$res.Add($semLinhas); continue
@@ -3975,6 +3980,13 @@ def _ops_pywin32(livro, ops, guardar):
             nome = wb.Worksheets(o["folha"]).Name if o.get("folha") else None
             res.append(_aplicar_filtros_com(wb, [x for x in o["lista"] if nome is None or x["folha"] == nome]))
             continue
+        if o["op"] == "copia":                      # cópia de segurança do livro (como está agora no Excel)
+            try:
+                wb.SaveCopyAs(o["destino"])
+            except Exception:
+                pass
+            res.append(None)
+            continue
         if o["op"] == "reaplicar_filtro":           # depois de escrever: o filtro que lá está volta a ser aplicado
             try:
                 sh = wb.Worksheets(o["folha"])
@@ -4071,9 +4083,7 @@ def _aplicar_filtros_com(wb, lista):
                 visiveis = sh.AutoFilter.Range.Columns(1).SpecialCells(12).Count    # 12 = só células visíveis
             except Exception:
                 visiveis = 0
-            if visiveis <= 1:                               # só o cabeçalho: o filtro esconderia tudo -> tira-o
-                if sh.FilterMode:
-                    sh.ShowAllData()
+            if visiveis == 1:                               # só o cabeçalho visível: fica, mas avisa
                 sem_linhas.append(it["folha"])
         except Exception:
             pass
@@ -4081,11 +4091,21 @@ def _aplicar_filtros_com(wb, lista):
 
 
 def com_filtros(ex, ops, folhas):
-    """Escreve sem estragar filtros: os filtros ficam onde estão (a escrita num intervalo chega também às linhas
-    escondidas) e no fim o Excel volta a aplicá-los aos valores novos (como o Ctrl+Alt+L)."""
-    depois = [{"op": "reaplicar_filtro", "folha": f} for f in folhas]
-    r = ex.ops(list(ops) + depois, guardar=True)
-    return r[:len(ops)] if r else r
+    """Escreve sem estragar filtros: guarda uma cópia do livro, lê os filtros, tira-os das folhas onde se vai
+    escrever (NUNCA se escreve numa folha filtrada: o Excel só escreveria nas linhas visíveis), escreve e volta a
+    aplicá-los (por cabeçalho). O filtro nunca é retirado, mesmo que esconda todas as linhas."""
+    try:
+        ex.ops([{"op": "copia", "destino": FICH_COPIA}])
+    except Exception:
+        pass
+    try:
+        filtros = ex.ops([{"op": "ler_filtros"}])[0] or []
+    except Exception:
+        filtros = []
+    antes = [{"op": "mostrar_tudo", "folha": f} for f in folhas]
+    depois = [{"op": "aplicar_filtros", "folha": f, "lista": filtros} for f in folhas] if filtros else []
+    r = ex.ops(antes + list(ops) + depois, guardar=True)
+    return r[len(antes):len(antes) + len(ops)] if r else r
 
 
 def ler_filtros():
@@ -4206,6 +4226,13 @@ def _ops_ficheiro(caminho, ops, guardar):
             res.append(oc)
         elif o["op"] == "aplicar_filtros":
             res.append([])
+        elif o["op"] == "copia":
+            try:
+                import shutil
+                shutil.copy2(caminho, o["destino"])
+            except Exception:
+                pass
+            res.append(None)
         elif o["op"] == "reaplicar_filtro":
             ws = folha(o["folha"])
             if ws.auto_filter.filterColumn:             # sem Excel não dá para avaliar o filtro: mostra as linhas
