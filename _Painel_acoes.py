@@ -403,6 +403,8 @@ CRITERIOS_ORD = [
     ("Nota global (5 → 0)", "nota", True),
     ("Pontuação (5 → 1)", "pont", True),
     ("Detidos (x) primeiro", "det", True),
+    ("Detidos (x): resultado decrescente", "det_lp_desc", True),
+    ("Detidos (x): resultado crescente", "det_lp_asc", True),
     ("Analistas (alvo / preço)", "pot", True),
     ("Valor justo (justo / preço)", "justo_pct", True),
     ("Qualidade (0-5)", "qual", True),
@@ -487,6 +489,14 @@ def chave_ordem(criterio):
         nt = d.get("nota") if isinstance(d.get("nota"), (int, float)) else p
         if k == "det":                  # detidos primeiro; dentro de cada grupo, pela nota global e pelo desempate
             return (not e_detido(v), -nt, -p) + desempate(d)
+        if k in ("det_lp_desc", "det_lp_asc"):   # detidos primeiro, pelo lucro / prejuízo (€); depois os outros
+            lp = d.get("lp_eur")                 # pela nota global
+            tem = e_detido(d.get("det")) or isinstance(lp, (int, float)) and d.get("valor_eur")
+            if not tem:
+                return (2, 0, -nt, -p) + desempate(d)
+            if not isinstance(lp, (int, float)):
+                return (1, 0, -nt, -p) + desempate(d)
+            return (0, -lp if k == "det_lp_desc" else lp, -nt, -p) + desempate(d)
         if k == "nota":                 # empate: pontuação, depois desempate
             return (not isinstance(v, (int, float)), -(v or 0), -p) + desempate(d)
         if k == "pont":                 # empate: desempate (ações: analistas + valor justo; ETFs: 6 meses)
@@ -542,7 +552,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V069", "18/11/2026"
+VERSAO, DATA_VERSAO = "V071", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1598,6 +1608,9 @@ def registar_botao():
         bat = BAT
         cmd_exe = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
         comando = f'"{cmd_exe}" /c ""{bat}" "%1""'
+        pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.exists(pyw):                        # sem janela preta: o script abre a janela de progresso
+            comando = f'"{pyw}" "{os.path.abspath(__file__)}" "%1"'
         base = rf"Software\Classes\{PROTOCOLO}"
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:Painel de acoes")
@@ -6618,7 +6631,200 @@ def atualizar_tudo(so=None, servidor=None):
                   "(limite na folha Ponderações).")
 
 
-if __name__ == "__main__":
+FICH_TEMPOS = os.path.join(PASTA, "_Painel_acoes_tempos.json")   # durações das últimas execuções (estimativa)
+
+
+def acao_do_botao(arg):
+    """(chave, descrição) da ação pedida, para a janela de progresso e para a estimativa do tempo."""
+    a = arg.lower()
+    for chave, padrao, txt_ in (
+            ("reclassificar", "reclassificar", "Reclassificar e reordenar"),
+            ("ordenar", "ordenar", "Ordenar"),
+            ("procurar", "procurar", "Procurar"), ("top", "://top", "Mais significativas"),
+            ("base", "://base", "Lista base"), ("acrescentar", "acrescentar", "Acrescentar marcados"),
+            ("precos", "precos", "Atualizar preços"), ("modo", "://modo", "Mudar de bolsa e atualizar tudo"),
+            ("acoes", "atualizar/acoes", "Atualizar ações"), ("acoes", "atualizar//acoes", "Atualizar ações"),
+            ("etfs", "atualizar/etfs", "Atualizar ETFs"), ("etfs", "atualizar//etfs", "Atualizar ETFs")):
+        if padrao in a:
+            return chave, txt_
+    return "tudo", "Atualizar tudo"
+
+
+def com_janela_progresso(funcao):
+    """Corre funcao() numa janela do Windows (em vez da consola): mostra as mensagens, o tempo decorrido e o tempo
+    estimado (pelas últimas execuções da mesma ação) e fecha-se sozinha no fim. Se houver erro, fica aberta."""
+    import tkinter as tk
+    from tkinter import ttk
+    import threading
+    import queue
+    import time
+    import builtins
+    chave, titulo = acao_do_botao(" ".join(sys.argv[1:]))
+    try:
+        with open(FICH_TEMPOS, encoding="utf-8") as f:
+            tempos = json.load(f)
+    except Exception:
+        tempos = {}
+    hist = [t for t in tempos.get(chave, []) if isinstance(t, (int, float)) and t > 0]
+    estimado = sorted(hist)[len(hist) // 2] if hist else None
+    fila = queue.Queue()
+    estado = {"fim": None, "erro": False}
+
+    class Escritor:
+        def write(self, txt_):
+            if txt_:
+                fila.put(txt_.replace("\r", ""))
+
+        def flush(self):
+            pass
+    sys.stdout = sys.stderr = Escritor()
+    builtins.input = lambda prompt="": (print(prompt) if prompt else None) or ""   # nunca fica à espera
+
+    def trabalho():
+        try:
+            import pythoncom                            # o Excel (COM) fora da thread principal
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        try:
+            funcao()
+            registo("fim: ok")
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                registo(f"parou: {e.code}")
+                estado["erro"] = True
+                if not isinstance(e.code, int):
+                    print(e.code)
+            else:
+                registo("fim: ok")
+        except Exception:
+            registo("ERRO: " + traceback.format_exc().strip().replace("\n", " | "))
+            traceback.print_exc()
+            estado["erro"] = True
+        estado["fim"] = time.time()
+
+    raiz = tk.Tk()
+    raiz.title(f"Painel de ações · {titulo}")
+    raiz.geometry("760x430")
+    raiz.minsize(480, 260)
+    try:
+        raiz.call("tk", "scaling", raiz.winfo_fpixels("1i") / 72.0)
+    except Exception:
+        pass
+    st = ttk.Style()
+    try:
+        st.theme_use("vista")
+    except Exception:
+        pass
+    topo = ttk.Frame(raiz, padding=(12, 10, 12, 4))
+    topo.pack(fill="x")
+    ttk.Label(topo, text=f"{titulo}  ·  {TXT_VERSAO}", font=("Segoe UI", 11, "bold")).pack(side="left")
+    barra = ttk.Progressbar(raiz, mode="determinate" if estimado else "indeterminate", maximum=1000)
+    barra.pack(fill="x", padx=12, pady=(4, 2))
+    if not estimado:
+        barra.start(15)
+    rot = ttk.Label(raiz, padding=(12, 0, 12, 4), foreground="#404040")
+    rot.pack(fill="x")
+    caixa = ttk.Frame(raiz, padding=(12, 4, 12, 4))
+    caixa.pack(fill="both", expand=True)
+    txt_w = tk.Text(caixa, font=("Consolas", 9), wrap="word", relief="solid", borderwidth=1, background="#FBFBFB")
+    sb = ttk.Scrollbar(caixa, command=txt_w.yview)
+    txt_w.configure(yscrollcommand=sb.set, state="disabled")
+    sb.pack(side="right", fill="y")
+    txt_w.pack(side="left", fill="both", expand=True)
+    txt_w.tag_configure("erro", foreground="#C00000")
+    baixo = ttk.Frame(raiz, padding=(12, 4, 12, 10))
+    baixo.pack(fill="x")
+    bt = ttk.Button(baixo, text="Fechar", command=raiz.destroy, state="disabled")
+    bt.pack(side="right")
+    manter = {"sim": False}
+    bm = ttk.Button(baixo, text="Manter aberta", command=lambda: manter.update(sim=True) or bm.pack_forget())
+    t0 = time.time()
+
+    def mmss(x):
+        x = int(round(x))
+        return f"{x // 60}:{x % 60:02d}"
+
+    def fechar_pedido():
+        if estado["fim"] is not None:
+            raiz.destroy()                              # durante o trabalho não fecha (o Excel ficaria a meio)
+    raiz.protocol("WM_DELETE_WINDOW", fechar_pedido)
+
+    def ciclo():
+        novo = []
+        while True:
+            try:
+                novo.append(fila.get_nowait())
+            except queue.Empty:
+                break
+        if novo:
+            txt_w.configure(state="normal")
+            for x in novo:
+                txt_w.insert("end", x, "erro" if ("Traceback" in x or "Error" in x or "ERRO" in x) else ())
+            txt_w.see("end")
+            txt_w.configure(state="disabled")
+        agora = time.time()
+        if estado["fim"] is None:
+            dec = agora - t0
+            if estimado:
+                barra["value"] = min(dec / estimado, 0.99) * 1000
+                falta = estimado - dec
+                rot["text"] = (f"Decorrido {mmss(dec)}  /  estimado ~{mmss(estimado)}  ({min(dec / estimado, 0.99):.0%})"
+                               + (f"  ·  faltam ~{mmss(falta)}" if falta > 0 else "  ·  quase a acabar..."))
+            else:
+                rot["text"] = f"Decorrido {mmss(dec)}  (primeira vez desta ação: ainda sem estimativa)"
+            raiz.after(250, ciclo)
+            return
+        dur = estado["fim"] - t0
+        barra.stop()
+        barra.configure(mode="determinate")
+        barra["value"] = 1000
+        bt.configure(state="normal")
+        if estado["erro"]:
+            rot.configure(text=f"Parou ao fim de {mmss(dur)}: vê as mensagens acima.", foreground="#C00000")
+            raiz.bell()
+            return
+        if not estado.get("gravado"):
+            estado["gravado"] = True
+            try:
+                tempos[chave] = (hist + [round(dur, 1)])[-5:]
+                with open(FICH_TEMPOS, "w", encoding="utf-8") as f:
+                    json.dump(tempos, f)
+            except Exception:
+                pass
+            estado["fecha"] = agora + 4
+            bm.pack(side="right", padx=(0, 8))
+        if manter["sim"]:
+            rot.configure(text=f"Concluído em {mmss(dur)}.")
+            return
+        resta = estado["fecha"] - agora
+        if resta <= 0:
+            raiz.destroy()
+            return
+        rot.configure(text=f"Concluído em {mmss(dur)}. A janela fecha-se em {int(resta) + 1} s.", foreground="#1E8E3E")
+        raiz.after(250, ciclo)
+    threading.Thread(target=trabalho, daemon=True).start()
+    raiz.after(100, ciclo)
+    raiz.mainloop()
+
+
+def usar_janela_progresso():
+    """Janela de progresso: no Windows, nos botões que trabalham (não na janela da posição nem no servidor), quando
+    não há consola (pythonw) ou quando se pede com --janela-progresso."""
+    if os.name != "nt" and "--janela-progresso" not in sys.argv:
+        return False
+    a = " ".join(sys.argv[1:]).lower()
+    if any(x in a for x in ("--servidor", "--janela", "--modelo", "posicao", "fechar_quadro")) and \
+            "--janela-progresso" not in sys.argv:
+        return False
+    return sys.stdout is None or "--janela-progresso" in sys.argv
+
+
+if __name__ == "__main__" and usar_janela_progresso():
+    if "--janela-progresso" in sys.argv:
+        sys.argv.remove("--janela-progresso")
+    com_janela_progresso(main)
+elif __name__ == "__main__":
     try:
         main()
         registo("fim: ok")
