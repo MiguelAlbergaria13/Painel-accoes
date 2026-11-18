@@ -552,7 +552,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V075", "18/11/2026"
+VERSAO, DATA_VERSAO = "V076", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1113,6 +1113,7 @@ def largura(w, fmt):
 
 def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=None):
     from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import column_index_from_string
     estado = estado or {}
     borda = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
     amarelo = PatternFill("solid", fgColor="FFF2CC")
@@ -1143,6 +1144,23 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws.title = nome
     ws["A1"] = titulo
     ws["A1"].font = Font(size=14, bold=True)
+    col_u = C_UTIL.rstrip("0123456789")
+    ant_u = get_column_letter(column_index_from_string(col_u) - 1)
+    ws[f"{ant_u}1"] = "Utilizador:"
+    ws[f"{ant_u}1"].font = Font(bold=True)
+    ws[f"{ant_u}1"].alignment = Alignment(horizontal="right", vertical="center")
+    if idx == 1:                                 # Ações: a escolha (lista); ETFs: mostra a mesma
+        ws[C_UTIL] = utilizador()
+        dv_u = DataValidation(type="list", formula1='"' + ",".join(UTILIZADORES) + '"', allow_blank=False)
+        dv_u.error, dv_u.errorTitle = "Escolhe um utilizador da lista.", "Utilizador"
+        ws.add_data_validation(dv_u)
+        dv_u.add(C_UTIL)
+        ws[C_UTIL].fill = PatternFill("solid", fgColor="FFF2CC")
+        ws[C_UTIL].border = borda
+    else:
+        ws[C_UTIL] = f"='Ações'!{C_UTIL}"
+    ws[C_UTIL].font = Font(bold=True, color="7030A0")
+    ws[C_UTIL].alignment = Alignment(vertical="center")
     ws["E2"] = ("Coluna A: x nos títulos a atualizar (com \"Assinalados\" na lista ao lado do ▶ ATUALIZAR, "
                 "ou \"NG ≥\" com a nota mínima escrita ao lado; as linhas não atualizadas ficam a rosa até serem atualizadas ou até um \"Tudo\"). Coluna B: x nos títulos que "
                 "tens; colunas C e D: nº de ações e preço médio de compra por ação (na moeda da cotação) -> valor detido e "
@@ -5139,9 +5157,48 @@ GH_USER, GH_REPO = "MiguelAlbergaria13", "Painel-acoes"      # o endereço da p�
 GH_URL = f"https://{GH_USER.lower()}.github.io/{GH_REPO}/"
 
 
+DONO = "Miguel Albergaria"                      # só este utilizador publica a app do telemóvel (GitHub)
+UTILIZADORES = [DONO, "Frederico Carvalho"]
+C_UTIL = "N1"                                    # folha Ações: utilizador deste livro (lista)
+FICH_UTIL = os.path.join(PASTA, "_Painel_acoes_utilizador.txt")   # utilizador por defeito de um livro novo
+_UTIL = {}
+
+
+def utilizador():
+    """Utilizador deste livro: a célula N1 da folha Ações (como está agora no Excel); sem livro, o do ficheiro
+    _Painel_acoes_utilizador.txt da pasta; senão, o dono."""
+    if "u" in _UTIL:
+        return _UTIL["u"]
+    u = None
+    if os.path.exists(FICHEIRO):
+        try:
+            v = Excel(FICHEIRO).ops([{"op": "ler", "folha": 1, "rng": C_UTIL}])[0]
+            u = txt(v[0][0] if isinstance(v, (list, tuple)) and v and isinstance(v[0], (list, tuple)) else v)
+        except Exception:
+            try:
+                from openpyxl import load_workbook
+                wb_ = load_workbook(FICHEIRO, read_only=True)
+                u = txt(wb_.worksheets[0][C_UTIL].value)
+                wb_.close()
+            except Exception:
+                u = None
+    if not u:
+        try:
+            with open(FICH_UTIL, encoding="utf-8") as f:
+                u = f.read().strip()
+        except Exception:
+            u = None
+    _UTIL["u"] = u or DONO
+    return _UTIL["u"]
+
+
+def e_dono():
+    return "--servidor" in sys.argv or utilizador().strip().lower() == DONO.lower()
+
+
 def ficheiro_link_app():
     """Na pasta do painel: o endereço da app do telemóvel (texto e atalho da Internet)."""
-    if "--servidor" in sys.argv:
+    if "--servidor" in sys.argv or not e_dono():
         return
     try:
         txt_l = (f"App do telemóvel (página atualizada no GitHub, com a palavra-passe):\n{GH_URL}\n\n"
@@ -5510,6 +5567,12 @@ FICH_SYNC = os.path.join(PASTA, BASE + "_definicoes_app.json")
 
 
 def sync_dos_precos(linhas, etfs):
+    if not e_dono():
+        return
+    return _sync_dos_precos(linhas, etfs)
+
+
+def _sync_dos_precos(linhas, etfs):
     """↻ PREÇOS: as definições do último ▶ ATUALIZAR com os detidos (x, nº de ações, preço de compra) como estão agora
     nas folhas, para as atualizações automáticas não voltarem a valores antigos."""
     try:
@@ -5579,6 +5642,9 @@ def pagina_html(linhas, etfs, texto):
 def gerar_html(linhas, etfs, texto):
     """Página para o telemóvel com nomes, notas, decisão e níveis de compra e venda (a situação do momento)."""
     global BOTAO
+    if not e_dono():                             # outro utilizador: o livro é só dele; nada vai para o telemóvel
+        print(f"Utilizador: {utilizador()} (sem app do telemóvel).")
+        return
     try:
         cfg = _ler_cfg_gh()
         if cfg.get("token_botao"):
