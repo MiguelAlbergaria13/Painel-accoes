@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V059", "17/11/2026"
+VERSAO, DATA_VERSAO = "V062", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1244,7 +1244,10 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
         if estreita and math.ceil(len(h) / max((estreita - 1) * 1.3, 1)) > 2:
             vertical.add(j)
             larguras[j] = min(larguras[j], estreita)
-    H_ALTO = 150                                        # altura do cabeçalho (pontos) com texto ao alto
+    H_ALTO = 47                                         # altura máxima do cabeçalho (pontos), mesmo que algum
+    for j in vertical:                                  # título não caiba todo; as colunas com texto ao alto
+        n_lin = math.ceil(len(cabs[j]) * 4.4 / (H_ALTO - 10))   # alargam um pouco (no máximo 7,5)
+        larguras[j] = max(larguras[j], min(2 * n_lin + 1.5, 7.5))
     for j, ((k, _, w, fmt, grupo), h) in enumerate(zip(COLS, cabs), start=1):
         c = ws.cell(L0, j, h)
         c.font = Font(bold=True, color="FFFFFF", size=8)
@@ -1258,11 +1261,11 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                       if j not in vertical] or [2])
     alto = max([len(h) * 4.4 / max(1, math.floor(w * 5.25 / 10.5)) for j, (h, w) in enumerate(zip(cabs, larguras))
                 if j in vertical] or [0])
-    ws.row_dimensions[L0].height = min(max(11 * max(linhas_cab, 2) + 4, alto + 8), 220)
+    ws.row_dimensions[L0].height = min(max(11 * max(linhas_cab, 2) + 4, alto + 8), H_ALTO)
     for i, d in enumerate(linhas, start=1):
         r = L0 + i
         for j, (k, _, _, fmt, grp) in enumerate(COLS, start=1):
-            c = ws.cell(r, j, vazio_esp(d.get(k)))
+            c = ws.cell(r, j, link_nome(vazio_esp(d.get(k)), r) if k == "nome" else vazio_esp(d.get(k)))
             if k in NEGRITO:                    # preço atual e níveis de compra e venda a negrito
                 c.font = Font(bold=True, color="C00000" if k == "venda_min" else None)
             elif k == "venda_min_pct":          # rede de segurança: a vermelho, é extraordinária
@@ -4263,8 +4266,31 @@ def vazio_esp(v):
 
 
 def sem_esp(v):
-    """Ao ler do Excel: o espaço das células vazias volta a ser vazio."""
+    """Ao ler do Excel: o espaço das células vazias volta a ser vazio (e o nome com ligação volta a ser só o nome)."""
+    if isinstance(v, str) and v.startswith("=HYPERLINK("):
+        m = re.search(r',"((?:[^"]|"")*)"\)$', v)
+        return m.group(1).replace('""', '"') if m else v
     return None if isinstance(v, str) and not v.strip() else v
+
+
+URL_GRAFICO = "https://finance.yahoo.com/quote/"
+
+
+def link_nome(nome, r):
+    """Nome do título com ligação para o gráfico (Yahoo, no ticker da folha = na moeda da folha). A fórmula usa o
+    ticker da própria linha, por isso continua certa depois de ordenar."""
+    if not isinstance(nome, str) or not nome.strip() or nome.startswith("="):
+        return nome
+    tl = get_column_letter(COL["ticker"])
+    return f'=HYPERLINK("{URL_GRAFICO}"&${tl}{r}&"/chart","{nome[:250].replace(chr(34), chr(34) * 2)}")'
+
+
+def com_links(valores, i0):
+    """Linhas a escrever a partir da linha i0: põe a ligação no nome."""
+    j = COL["nome"] - 1
+    for i, v in enumerate(valores):
+        v[j] = link_nome(v[j], i0 + i)
+    return valores
 
 
 def linha_lida(chaves, v):
@@ -4336,7 +4362,7 @@ def ordenar(idx):
         n += 1
     linhas = [linha_lida([k for k, *_ in COLS], dados[i]) for i in range(n)]
     linhas.sort(key=chave_ordem(criterio))
-    valores = [[vazio_esp(d.get(k)) for k, *_ in COLS] for d in linhas]
+    valores = com_links([[vazio_esp(d.get(k)) for k, *_ in COLS] for d in linhas], L0 + 1)
     com_filtros(ex, [{"op": "escrever", "folha": idx, "rng": f"A{L0 + 1}:{ultima}{L0 + n}", "valores": valores},
                      {"op": "escrever", "folha": idx, "rng": C_ORD_EST, "valores": [[
                          f"Ordenado por: {criterio} ({datetime.now():%d/%m/%Y %H:%M})"]]}], [idx])
@@ -4727,7 +4753,7 @@ def atualizar_precos(reclassificar=False):
         linhas.sort(key=chave_ordem(criterio))
         if linhas:
             ops.append({"op": "escrever", "folha": idx, "rng": f"A{L0 + 1}:{ultima}{L0 + len(linhas)}",
-                        "valores": [[vazio_esp(d.get(k)) for k in chaves] for d in linhas]})
+                        "valores": com_links([[vazio_esp(d.get(k)) for k in chaves] for d in linhas], L0 + 1)})
     sem = len(tickers) - len(precos)
     msg = (f"Reclassificado e reordenado em {datetime.now():%d/%m/%Y %H:%M} com as percentagens da folha Ponderações "
            f"(ações: {texto_pesos(True).split(' (')[0]}). Preços e dados do último ▶ ATUALIZAR / ↻ PREÇOS."
@@ -4861,7 +4887,7 @@ setTimeout(()=>{const t=D.a.concat(D.e).filter(d=>d.ce!=null&&d.vd!=null);if(!t.
   const bg=bm(D.a.concat(D.e));
   g.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:baseline"><b>Posição global</b><span style="font-size:11px;color:var(--mu)">▸ ver posição</span></div>`
     +`<div>Investido/atual: <b style="white-space:nowrap">${eur(c)}</b> / <b style="white-space:nowrap">${eur(v)}</b></div>`
-    +`<div>Resultado: <b style="color:${cor};white-space:nowrap">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b>${bg!=null?` <span style="white-space:nowrap">· β <b>${num(bg,2)}</b></span>`:''}</div>`;},0);
+    +`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span>Resultado: <b style="color:${cor};white-space:nowrap">${l>=0?'+':'−'}${eur(Math.abs(l))} (${pct2(c?v/c-1:0)})</b></span>${bg!=null?`<span style="white-space:nowrap">β <b>${num(bg,2)}</b></span>`:''}</div>`;},0);
 if(D.gh&&D.gh.t){
   const bt=document.getElementById('bt'),mn=document.getElementById('mn'),av=document.getElementById('av');
   bt.style.display='block';
@@ -4929,9 +4955,9 @@ function cartao(d){
   const azul=v=>v<=1.25?['#1F4E79','#fff']:v<=1.5?['#2F75B5','#fff']:v<=1.75?['#9BC2E6','#1F4E79']:['#BDD7EE','#1F4E79'];
   const [cn,fn]=d.ca?azul(d.np):[cor(d.nt),'inherit'];
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
-  <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
+  <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/quote/${encodeURIComponent(d.t)}/chart" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
-  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/muito/.test(d.nr||'')?'#fff':'#1c1e21'}">${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.be!=null?` <span class="dec" title="Beta: volatilidade face ao S&amp;P 500" style="background:${d.be<0.8?'#C6E5B3':d.be>1.5?'#F8A5A6':d.be>1.2?'#FCE4D6':'#eceff3'};color:#1c1e21">β ${num(d.be,2)}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
+  <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/muito/.test(d.nr||'')?'#fff':'#1c1e21'}">${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.be!=null?` <span class="dec" title="Beta: volatilidade face ao S&amp;P 500" style="float:right;background:${d.be<0.8?'#C6E5B3':d.be>1.5?'#F8A5A6':d.be>1.2?'#FCE4D6':'#eceff3'};color:#1c1e21">β ${num(d.be,2)}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
   <div class="lv"><div class="rt">Compra</div><div>Máxima (ordem limite)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
