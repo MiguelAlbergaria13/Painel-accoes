@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V062", "18/11/2026"
+VERSAO, DATA_VERSAO = "V065", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1266,6 +1266,8 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
         r = L0 + i
         for j, (k, _, _, fmt, grp) in enumerate(COLS, start=1):
             c = ws.cell(r, j, link_nome(vazio_esp(d.get(k)), r) if k == "nome" else vazio_esp(d.get(k)))
+            if k == "nome":
+                c.font = Font(color="000000")
             if k in NEGRITO:                    # preço atual e níveis de compra e venda a negrito
                 c.font = Font(bold=True, color="C00000" if k == "venda_min" else None)
             elif k == "venda_min_pct":          # rede de segurança: a vermelho, é extraordinária
@@ -1441,6 +1443,8 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     tem = (f'OR(LOWER(${cd}{L0+1})="x",AND(ISNUMBER(${cd}{L0+1}),${cd}{L0+1}>0),'
            f'AND(ISNUMBER(${cq}{L0+1}),${cq}{L0+1}>0))')
     x_nome = f"{cd}{L0+1}:{cd}{n} {cn}{L0+1}:{cn}{n}"
+    ws.conditional_formatting.add(f"{cn}{L0+1}:{cn}{n}", FormulaRule(   # nomes (com ligação): sempre a preto
+        formula=[f"LEN(${cn}{L0+1})>=0"], font=Font(color="000000")))   # (o Excel põe as ligações a azul)
     ws.conditional_formatting.add(x_nome, FormulaRule(formula=[tem], font=Font(bold=True)))   # tens: x e nome a negrito
     ws.conditional_formatting.add(x_nome, FormulaRule(                 # tens: x e nome a amarelo; mais escuro
         formula=[f'AND({tem},{par})'], fill=PatternFill("solid", bgColor="FFD966"), stopIfTrue=True))
@@ -3805,6 +3809,13 @@ foreach ($o in $req.ops) {
     }
     [void]$res.Add($out); continue
   }
+  if ($o.op -eq 'reaplicar_filtro') {
+    try {
+      if ($o.folha -is [string]) { $sh = $wb.Worksheets.Item($o.folha) } else { $sh = $wb.Worksheets.Item([int]$o.folha) }
+      if ($sh.AutoFilterMode -and $sh.FilterMode) { [void]$sh.AutoFilter.ApplyFilter() }
+    } catch {}
+    [void]$res.Add($null); continue
+  }
   if ($o.op -eq 'mostrar_tudo') {
     try {
       if ($o.folha -is [string]) { $sh = $wb.Worksheets.Item($o.folha) } else { $sh = $wb.Worksheets.Item([int]$o.folha) }
@@ -3964,6 +3975,15 @@ def _ops_pywin32(livro, ops, guardar):
             nome = wb.Worksheets(o["folha"]).Name if o.get("folha") else None
             res.append(_aplicar_filtros_com(wb, [x for x in o["lista"] if nome is None or x["folha"] == nome]))
             continue
+        if o["op"] == "reaplicar_filtro":           # depois de escrever: o filtro que lá está volta a ser aplicado
+            try:
+                sh = wb.Worksheets(o["folha"])
+                if sh.AutoFilterMode and sh.FilterMode:
+                    sh.AutoFilter.ApplyFilter()
+            except Exception:
+                pass
+            res.append(None)
+            continue
         if o["op"] == "mostrar_tudo":               # antes de escrever: tira o filtro (as linhas ficam todas visíveis)
             try:
                 sh = wb.Worksheets(o["folha"])
@@ -4061,19 +4081,11 @@ def _aplicar_filtros_com(wb, lista):
 
 
 def com_filtros(ex, ops, folhas):
-    """Escreve sem estragar filtros: lê os filtros, tira-os das folhas onde se vai escrever, escreve e volta a
-    aplicá-los (por cabeçalho). Se um filtro deixasse a folha sem linhas, fica sem filtro e avisa."""
-    try:
-        filtros = ex.ops([{"op": "ler_filtros"}])[0] or []
-    except Exception:
-        filtros = []
-    antes = [{"op": "mostrar_tudo", "folha": f} for f in folhas]
-    depois = [{"op": "aplicar_filtros", "folha": f, "lista": filtros} for f in folhas] if filtros else []
-    r = ex.ops(antes + list(ops) + depois, guardar=True)
-    sem = sorted({x for v in (r or [])[len(antes) + len(ops):] if v for x in v})
-    if sem:
-        print("Aviso: o filtro de " + ", ".join(sem) + " escondia todas as linhas depois da atualização; foi retirado.")
-    return r[len(antes):len(antes) + len(ops)] if r else r
+    """Escreve sem estragar filtros: os filtros ficam onde estão (a escrita num intervalo chega também às linhas
+    escondidas) e no fim o Excel volta a aplicá-los aos valores novos (como o Ctrl+Alt+L)."""
+    depois = [{"op": "reaplicar_filtro", "folha": f} for f in folhas]
+    r = ex.ops(list(ops) + depois, guardar=True)
+    return r[:len(ops)] if r else r
 
 
 def ler_filtros():
@@ -4194,6 +4206,12 @@ def _ops_ficheiro(caminho, ops, guardar):
             res.append(oc)
         elif o["op"] == "aplicar_filtros":
             res.append([])
+        elif o["op"] == "reaplicar_filtro":
+            ws = folha(o["folha"])
+            if ws.auto_filter.filterColumn:             # sem Excel não dá para avaliar o filtro: mostra as linhas
+                for r in range(L0 + 1, ws.max_row + 1):   # (o filtro fica; no Excel: Dados > Reaplicar)
+                    ws.row_dimensions[r].hidden = False
+            res.append(None)
         elif o["op"] == "mostrar_tudo":
             ws = folha(o["folha"])
             if ws.auto_filter.filterColumn:
@@ -4282,7 +4300,7 @@ def link_nome(nome, r):
     if not isinstance(nome, str) or not nome.strip() or nome.startswith("="):
         return nome
     tl = get_column_letter(COL["ticker"])
-    return f'=HYPERLINK("{URL_GRAFICO}"&${tl}{r}&"/chart","{nome[:250].replace(chr(34), chr(34) * 2)}")'
+    return f'=HYPERLINK("{URL_GRAFICO}"&${tl}{r}&"/","{nome[:250].replace(chr(34), chr(34) * 2)}")'
 
 
 def com_links(valores, i0):
@@ -4855,7 +4873,7 @@ main{padding:8px 10px 40px}
 <div class="at" id="at"></div>
 <div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="G">Gráficos</button></div>
 <div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
-<option value="nt">Nota global</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
+<option value="nt">Nota global</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
 </header>
 <div id="glob" style="display:none"></div>
 <div id="qd" style="display:none;position:fixed;top:70px;left:8px;right:8px;z-index:20;background:#fffbe6;color:#222;border:1px solid #c9b458;border-radius:12px;padding:10px 34px 10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:13px;line-height:1.5"><button id="qdx" style="position:absolute;top:6px;right:6px;width:24px;height:24px;border:0;border-radius:50%;background:#d93025;color:#fff;font-weight:700">✕</button><div id="qdt"></div></div>
@@ -4955,7 +4973,7 @@ function cartao(d){
   const azul=v=>v<=1.25?['#1F4E79','#fff']:v<=1.5?['#2F75B5','#fff']:v<=1.75?['#9BC2E6','#1F4E79']:['#BDD7EE','#1F4E79'];
   const [cn,fn]=d.ca?azul(d.np):[cor(d.nt),'inherit'];
   let h=`<div class="card${d.ds?' ds':''}"><div class="top"><div class="nota" style="background:${cn};color:${fn}" title="${d.np!=null?'nível de preço '+num(d.np,1)+'/5':''}">${d.nt==null?'–':num(d.nt,1)}</div>
-  <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/quote/${encodeURIComponent(d.t)}/chart" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
+  <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/quote/${encodeURIComponent(d.t)}/" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
   <div class="px">${pr(d.p)} ${esc(d.m)}<span>sinal ${d.pt==null?'–':num(d.pt,d.pt%1?1:0)}</span></div></div>
   <span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/muito/.test(d.nr||'')?'#fff':'#1c1e21'}">${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.be!=null?` <span class="dec" title="Beta: volatilidade face ao S&amp;P 500" style="float:right;background:${d.be<0.8?'#C6E5B3':d.be>1.5?'#F8A5A6':d.be>1.2?'#FCE4D6':'#eceff3'};color:#1c1e21">β ${num(d.be,2)}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
@@ -5027,6 +5045,8 @@ function lucros(t){
 function mostrar(){
   const q=document.getElementById('q').value.trim().toLowerCase(), o=document.getElementById('o').value;
   const prep=l=>{if(q) l=l.filter(d=>(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q));
+    if(o.includes(':')){const [k,dr]=o.split(':'),g=d=>{const v=k.startsWith('o.')?(d.or||{})[k.slice(2)]:d[k];return typeof v==='number'?v:null;};
+      return l.slice().sort((a,b)=>{const x=g(a),y=g(b);if(x==null&&y==null)return (b.nt??-9)-(a.nt??-9);if(x==null)return 1;if(y==null)return -1;return dr==='a'?x-y:y-x;});}
     return l.slice().sort((a,b)=>o==='n'?String(a.n).localeCompare(b.n):o==='tmp'?(b.tmp??-9)-(a.tmp??-9):
       o==='vd'?(b.vd??-1)-(a.vd??-1):(b.nt??-9)-(a.nt??-9));};
   const tot=l=>{const v=l.filter(d=>d.vd!=null);if(!v.length)return '';
@@ -5489,7 +5509,9 @@ def pagina_html(linhas, etfs, texto):
                 "q": num(d.get("qual")), "s": num(d.get("saude_n")), "sd": txt(d.get("saude")) or None,
                 "sg": txt(d.get("sinal")) or None, "lp": txt(d.get("lp_txt")) or None, "cm": txt(d.get("coment")) or None,
                 "no": txt(d.get("notas")) or None, "ed": txt(d.get("etf_desc")) or None,
-                "ec": txt(d.get("etf_comp")) or None, "ea": num(d.get("etf_acoes"))}
+                "ec": txt(d.get("etf_comp")) or None, "ea": num(d.get("etf_acoes")),
+                "or": {k: num(d.get(k)) for k in ("pot", "justo_pct", "var1d", "var1m", "val_sempre", "val10", "val5",
+                                                  "val3", "val1", "dist0") if num(d.get(k)) is not None}}
     versao = datetime.now().strftime("%Y%m%d%H%M%S")
     vis = lambda d: txt(d.get("ticker")) and txt(d.get("ticker")).upper() not in OCULTOS
     n_oc = sum(1 for d in list(linhas) + list(etfs) if txt(d.get("ticker")) and not vis(d))
