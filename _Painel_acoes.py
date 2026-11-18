@@ -552,7 +552,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V074", "18/11/2026"
+VERSAO, DATA_VERSAO = "V075", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -6749,16 +6749,17 @@ def com_janela_progresso(funcao):
         barra.start(15)
     rot = ttk.Label(raiz, padding=(12, 0, 12, 4), foreground="#404040")
     rot.pack(fill="x")
+    baixo = ttk.Frame(raiz, padding=(12, 4, 12, 10))   # botões: arrumados antes do texto, para ficarem sempre
+    baixo.pack(side="bottom", fill="x")                # à vista (o texto encolhe se a janela for pequena)
     caixa = ttk.Frame(raiz, padding=(12, 4, 12, 4))
     caixa.pack(fill="both", expand=True)
-    txt_w = tk.Text(caixa, font=("Consolas", 9), wrap="word", relief="solid", borderwidth=1, background="#FBFBFB")
+    txt_w = tk.Text(caixa, font=("Consolas", 9), wrap="word", relief="solid", borderwidth=1, background="#FBFBFB",
+                    height=10)
     sb = ttk.Scrollbar(caixa, command=txt_w.yview)
     txt_w.configure(yscrollcommand=sb.set, state="disabled")
     sb.pack(side="right", fill="y")
     txt_w.pack(side="left", fill="both", expand=True)
     txt_w.tag_configure("erro", foreground="#C00000")
-    baixo = ttk.Frame(raiz, padding=(12, 4, 12, 10))
-    baixo.pack(fill="x")
     bt = ttk.Button(baixo, text="Fechar", command=raiz.destroy, state="disabled")
     bt.pack(side="right")
 
