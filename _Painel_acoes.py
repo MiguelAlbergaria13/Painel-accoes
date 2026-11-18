@@ -231,7 +231,7 @@ RAZOAVEL_SIGMAS = 1.0
 #   formato: "txt", "preco" ou "pct";  grupo: decide a cor do cabeçalho
 COLS = [("sel", "Atualizar (x)", 3, "txt", "sel"), ("det", "Detido (x)", 4, "txt", "det"),
         ("qtd", "Nº de ações detidas", 7, "qtd", "det"), ("pcompra", "Preço médio de compra (por ação)", 8, "preco", "det"),
-        ("valor_eur", "Valor detido (€)", 8, "eur", "det"), ("lp_eur", "Lucro / prejuízo (€)", 8, "eur", "det"),
+        ("valor_eur", "Valor detido (€)", 12, "eur", "det"), ("lp_eur", "Lucro / prejuízo (€)", 8, "eur", "det"),
         ("lp_pct", "Lucro / prejuízo (%)", 7, "pct", "det"), ("corr", "Corretora", 8, "txt", "det"),
         ("nome", "Empresa / ETF", 28, "txt", "id"),
         ("tipo", "Tipo", 5, "txt", "id"), ("codigo", "Código", 7, "txt", "id"),
@@ -552,7 +552,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V076", "18/11/2026"
+VERSAO, DATA_VERSAO = "V077", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1088,6 +1088,10 @@ def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), est
         folha_carteira(wb, linhas, etfs)
     except Exception as e:
         print("   aviso: folha Carteira não criada:", e)
+    try:
+        folha_simulador(wb)
+    except Exception as e:
+        print("   aviso: folha Simulador não criada:", e)
     for ws in wb.worksheets:
         marcar_versao(ws)
     return wb
@@ -6469,6 +6473,8 @@ def main():
         ver_posicao()
     elif "fechar_quadro" in arg:             # ✕ do quadro da carteira (versões anteriores)
         Excel(FICHEIRO).ops([{"op": "fechar_quadro"}], guardar=True)
+    elif "simular" in arg:                   # folha Simulador: ▶ SIMULAR (calcula à parte)
+        simular()
     elif "reclassificar" in arg:             # folha Ponderações: ↻ RECLASSIFICAR E REORDENAR
         atualizar_precos(reclassificar=True)
     elif "ordenar" in arg:                   # ↕ ORDENAR (painelacoes://ordenar/1 ou /2)
@@ -6535,6 +6541,7 @@ def atualizar_tudo(so=None, servidor=None):
         else:
             criterios, acrescentados, estado = ler_estado()
             carregar_pesos(Excel(FICHEIRO) if os.name == "nt" or os.path.exists(FICHEIRO) else None)
+            carregar_simulador(Excel(FICHEIRO) if os.name == "nt" or os.path.exists(FICHEIRO) else None)
         LP_MIN = estado.get("lp_min", LP_MIN)
         print(f"Longo prazo mínimo: {LP_MIN:.1%}/ano (abaixo disto, o que seria compra passa a 2.5 Não Rent. Longo Prazo).")
         if not estado.get("det"):
@@ -6697,6 +6704,523 @@ def atualizar_tudo(so=None, servidor=None):
                   "(limite na folha Ponderações).")
 
 
+# ================================================================================================ Simulador
+FOLHA_SIM = "Simulador"
+FICH_SIM = os.path.join(PASTA, "_Painel_acoes_simulador.json")   # escolhas e último resultado do simulador
+SIM_PERIODOS = ["Nenhum", "Semanal", "Mensal", "Trimestral", "Semestral", "Anual"]
+SIM_COMPRAR = ["Os meus títulos (x)", "Os N primeiros classificados", "Nota global ≥", "Carteira escolhida"]
+SIM_ENTRE = ["Ações e ETFs", "Só ações", "Só ETFs"]
+SIM_PADRAO = {"ini_sim": "Sim", "ini_val": 10000, "per": "Mensal", "per_val": 200, "comprar": SIM_COMPRAR[1],
+              "n": 10, "entre": SIM_ENTRE[0], "d_ini": "01/01/2016", "d_fim": "", "bench": "IWDA.AS",
+              "carteira": []}
+SIM_LIN_CART, SIM_MAX_CART = 14, 30          # carteira escolhida: B14:C43
+SIM_LIN_TIT, SIM_MAX_TIT = 14, 60            # resultado por título: N14:S73
+SIM_LIN_SER, SIM_MAX_SER = 14, 150           # série para o gráfico (colunas U:X; sempre 150 pontos)
+SIM = {}
+
+
+def _sim_num(v):
+    """Número (aceita texto com vírgula); senão None."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v) if v == v else None
+    try:
+        return float(str(v).replace("€", "").replace("%", "").replace(" ", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _sim_guardados():
+    try:
+        with open(FICH_SIM, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _sim_gravar(**kw):
+    g = _sim_guardados()
+    g.update(kw)
+    try:
+        with open(FICH_SIM, "w", encoding="utf-8") as f:
+            json.dump(g, f, ensure_ascii=False, default=str)
+    except Exception:
+        pass
+
+
+def _sim_data(v):
+    """Data escrita de qualquer forma (data do Excel, dd/mm/aaaa, aaaa-mm-dd) -> datetime (ou None)."""
+    from datetime import datetime as dt_, timedelta
+    if v in (None, ""):
+        return None
+    if isinstance(v, dt_):
+        return dt_(v.year, v.month, v.day)
+    if hasattr(v, "year") and hasattr(v, "month"):
+        return dt_(v.year, v.month, v.day)
+    if isinstance(v, (int, float)) and 20000 < v < 80000:          # número de série do Excel
+        return dt_(1899, 12, 30) + timedelta(days=int(v))
+    s = str(v).strip()
+    for f in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%y", "%Y/%m/%d", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return dt_.strptime(s[:19] if "%H" in f else s.split(" ")[0], f)
+        except Exception:
+            pass
+    return None
+
+
+def ler_simulador(ex):
+    """Escolhas da folha Simulador (como estão agora no Excel)."""
+    r = ex.ops([{"op": "ler", "folha": FOLHA_SIM, "rng": "C4:F10"},
+                {"op": "ler", "folha": FOLHA_SIM, "rng": f"B{SIM_LIN_CART}:C{SIM_LIN_CART + SIM_MAX_CART - 1}"}])
+    v, cart = r[0], r[1]
+    g = lambda i, j: sem_esp(v[i][j]) if i < len(v) and j < len(v[i]) else None
+    p = {"ini_sim": txt(g(0, 0)) or "Não", "ini_val": _sim_num(g(0, 3)) or 0, "per": txt(g(1, 0)) or "Nenhum",
+         "per_val": _sim_num(g(1, 3)) or 0, "comprar": txt(g(2, 0)) or SIM_COMPRAR[0], "n": _sim_num(g(2, 3)),
+         "entre": txt(g(3, 0)) or SIM_ENTRE[0], "d_ini": g(4, 0), "d_fim": g(4, 3), "bench": txt(g(5, 0)),
+         "carteira": [[txt(sem_esp(a)).upper(), _sim_num(sem_esp(b))] for a, b, *_ in (cart or []) if txt(sem_esp(a))]}
+    for k in ("d_ini", "d_fim"):
+        d = _sim_data(p[k])
+        p[k] = d.strftime("%d/%m/%Y") if d else ""
+    return p
+
+
+def carregar_simulador(ex=None):
+    """Antes de reconstruir o livro: guarda as escolhas do Simulador (para a folha nova as ter)."""
+    if ex is None:
+        return
+    try:
+        p = ler_simulador(ex)
+        SIM.update(p)
+        _sim_gravar(param=p)
+    except Exception:
+        pass
+
+
+def folha_simulador(wb):
+    """Folha Simulador: investimento inicial e reforços periódicos nos títulos escolhidos, entre duas datas
+    (cotações com dividendos, em euros). Calculado à parte, no botão ▶ SIMULAR."""
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.chart import LineChart, Reference
+    g = _sim_guardados()
+    p = {**SIM_PADRAO, **(g.get("param") or {}), **SIM}
+    ws = wb.create_sheet(FOLHA_SIM)
+    ws["A1"] = "Simulador: investimento inicial + reforços periódicos"
+    ws["A1"].font = Font(size=14, bold=True)
+    ws["B2"] = ("Escolhe a amarelo e carrega em ▶ SIMULAR (calcula à parte: não mexe nas outras folhas nem na app). "
+                "Compra nas datas de cada reforço, ao fecho, com as cotações ajustadas a dividendos (reinvestidos) e em "
+                "euros ao câmbio de cada dia; sem comissões nem impostos. O dinheiro de cada compra divide-se em partes "
+                "iguais pelos títulos (na carteira escolhida, pelos pesos); um título ainda sem cotação nessa data fica "
+                "de fora dessa compra. Atenção: escolher pela nota de HOJE e simular o passado favorece o resultado "
+                "(os títulos com boa nota hoje são muitas vezes os que subiram).")
+    ws["B2"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["B2"].font = Font(italic=True, size=9, color="595959")
+    ws.merge_cells("B2:L2")
+    ws.row_dimensions[2].height = 52
+    amarelo = PatternFill("solid", fgColor="FFF2CC")
+    fino = Side(style="thin", color="BFBFBF")
+    borda = Border(left=fino, right=fino, top=fino, bottom=fino)
+
+    def lista(cel, itens):
+        dv = DataValidation(type="list", formula1='"' + ",".join(itens) + '"', allow_blank=True)
+        ws.add_data_validation(dv)
+        dv.add(cel)
+
+    def entrada(cel, v, fmt=None):
+        c = ws[cel]
+        c.value = v
+        c.fill, c.border, c.font = amarelo, borda, Font(bold=True)
+        if fmt:
+            c.number_format = fmt
+    linhas_e = [("Investimento inicial", "C4", p["ini_sim"], ["Sim", "Não"], "Valor (€)", "F4", p["ini_val"]),
+                ("Reforço periódico", "C5", p["per"], SIM_PERIODOS, "Valor de cada reforço (€)", "F5", p["per_val"]),
+                ("Comprar", "C6", p["comprar"], SIM_COMPRAR, "N (primeiros) ou nota mínima", "F6", p["n"]),
+                ("Entre", "C7", p["entre"], SIM_ENTRE, None, None, None),
+                ("Data inicial", "C8", _sim_data(p["d_ini"]) or p["d_ini"], None, "Data final (vazio = hoje)", "F8",
+                 _sim_data(p["d_fim"]) or p["d_fim"]),
+                ("Comparar com (ticker Yahoo)", "C9", p["bench"], None, None, None, None)]
+    for rot, cel, v, itens, rot2, cel2, v2 in linhas_e:
+        r = int(cel[1:])
+        ws[f"B{r}"] = rot
+        ws[f"B{r}"].font = Font(bold=True)
+        entrada(cel, v, "dd/mm/yyyy" if r == 8 else None)
+        ws.merge_cells(f"C{r}:D{r}")
+        if itens:
+            lista(cel, itens)
+        if rot2:
+            ws[f"E{r}"] = rot2
+            ws[f"E{r}"].alignment = Alignment(horizontal="right")
+            entrada(cel2, v2, "dd/mm/yyyy" if r == 8 else ('"€" #,##0' if r in (4, 5) else "General"))
+    ws["G9"] = "(ex.: IWDA.AS = ações mundiais em €; vazio = sem comparação)"
+    ws["G9"].font = Font(italic=True, size=9, color="808080")
+    botao(ws, "H4", "▶ SIMULAR", "painelacoes://simular", "7030A0", "4B0082", 14)
+    ws.merge_cells("H4:J5")
+    for col, w in zip("ABCDEFGHIJKLMNOPQRS", (2, 30, 14, 14, 44, 16, 3, 12, 12, 12, 3, 3, 3, 34, 12, 13, 13, 11, 3)):
+        ws.column_dimensions[col].width = w
+    # carteira escolhida
+    ws[f"B{SIM_LIN_CART - 2}"] = "Carteira escolhida (só com «Carteira escolhida»)"
+    ws[f"B{SIM_LIN_CART - 2}"].font = Font(bold=True, size=12)
+    for j, h in ((2, "Ticker Yahoo (ex.: MSFT, ASML.AS, IWDA.AS)"), (3, "Peso (%)")):
+        c = ws.cell(SIM_LIN_CART - 1, j, h)
+        c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3B57")
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    cart = p.get("carteira") or []
+    for i in range(SIM_MAX_CART):
+        r = SIM_LIN_CART + i
+        t, w = (cart[i] + [None, None])[:2] if i < len(cart) else (None, None)
+        entrada(f"B{r}", t)
+        entrada(f"C{r}", w, "0.0")
+    ws[f"B{SIM_LIN_CART + SIM_MAX_CART}"] = "Pesos vazios = partes iguais."
+    ws[f"B{SIM_LIN_CART + SIM_MAX_CART}"].font = Font(italic=True, size=9, color="808080")
+    # resultados (preenchidos pelo ▶ SIMULAR)
+    ws["E12"] = "Resultado"
+    ws["E12"].font = Font(bold=True, size=12)
+    for j, h in enumerate(("Título", "Ticker", "Investido (€)", "Valor final (€)", "Ganho (%)"), 14):
+        c = ws.cell(SIM_LIN_TIT - 1, j, h)
+        c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3B57")
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.cell(SIM_LIN_TIT - 2, 14, "Por título").font = Font(bold=True, size=12)
+    for i in range(SIM_MAX_TIT):
+        r = SIM_LIN_TIT + i
+        ws.cell(r, 16).number_format = ws.cell(r, 17).number_format = '"€" #,##0.00'
+        ws.cell(r, 18).number_format = "+0.0%;-0.0%;0.0%"
+    for i in range(SIM_MAX_SER):
+        r = SIM_LIN_SER + i
+        ws.cell(r, 21).number_format = "dd/mm/yyyy"
+        for j in (22, 23, 24):
+            ws.cell(r, j).number_format = '"€" #,##0'
+    for j, h in enumerate(("Data", "Investido", "Carteira", "Comparação"), 21):
+        ws.cell(SIM_LIN_SER - 1, j, h).font = Font(bold=True)
+    for col in "UVWX":
+        ws.column_dimensions[col].hidden = True
+    ch = LineChart()
+    ch.title = "Valor da carteira vs dinheiro investido (€)"
+    ch.add_data(Reference(ws, min_col=22, max_col=24, min_row=SIM_LIN_SER - 1, max_row=SIM_LIN_SER + SIM_MAX_SER - 1),
+                titles_from_data=True)
+    ch.set_categories(Reference(ws, min_col=21, min_row=SIM_LIN_SER, max_row=SIM_LIN_SER + SIM_MAX_SER - 1))
+    ch.y_axis.number_format = '#,##0'
+    ch.x_axis.number_format = "mm/yyyy"
+    ch.x_axis.majorTimeUnit = "years"
+    ch.y_axis.title, ch.x_axis.title = "€", None
+    try:
+        ch.x_axis.delete = False
+        ch.y_axis.delete = False
+    except Exception:
+        pass
+    for s_, cor in zip(ch.series, ("A6A6A6", "1F77B4", "FF7F0E")):
+        s_.graphicalProperties.line.solidFill = cor
+        s_.graphicalProperties.line.width = 22000
+        s_.smooth = False
+    ch.width, ch.height = 24, 11
+    ch.visible_cells_only = False                   # os dados estão em colunas escondidas
+    ws.add_chart(ch, "B46")
+    res = g.get("res")
+    if res:                                         # o último resultado continua à vista depois de um ▶ ATUALIZAR
+        for cel, v in res.get("resumo", []):
+            ws[cel] = v
+        for i, lin in enumerate(res.get("titulos", [])[:SIM_MAX_TIT]):
+            for j, v in enumerate(lin, 14):
+                ws.cell(SIM_LIN_TIT + i, j, v)
+        for i, lin in enumerate(res.get("serie", [])[:SIM_MAX_SER]):
+            for j, v in enumerate(lin, 21):
+                ws.cell(SIM_LIN_SER + i, j, _sim_data(v) if j == 21 else v)
+    _sim_formatar_resumo(ws)
+
+
+SIM_RESUMO = ["Total investido", "Valor final", "Ganho (€)", "Ganho (% do investido)",
+              "Rendimento anual (TIR, conta as datas dos reforços)", "Maior queda pelo caminho (sem contar reforços)",
+              "Comparação: valor final com o mesmo dinheiro", "Comparação: rendimento anual (TIR)", "Títulos comprados",
+              "Período", "Notas"]
+
+
+def _sim_formatar_resumo(ws):
+    fmts = ['"€" #,##0.00', '"€" #,##0.00', '+"€" #,##0.00;-"€" #,##0.00', "+0.0%;-0.0%", "+0.00%;-0.00%", "0.0%",
+            '"€" #,##0.00', "+0.00%;-0.00%", "General", "General", "General"]
+    for i, (rot, f) in enumerate(zip(SIM_RESUMO, fmts), 13):
+        ws[f"E{i}"] = rot
+        ws[f"E{i}"].alignment = Alignment(horizontal="right")
+        ws[f"F{i}"].number_format = f
+        ws[f"F{i}"].font = Font(bold=True, size=12 if i < 18 else 10)
+    ws["F23"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells("F23:L28")
+
+
+def _xirr(fluxos):
+    """TIR anual de [(data, valor)] (negativo = dinheiro posto, positivo = valor final)."""
+    if not fluxos or all(v >= 0 for _, v in fluxos) or all(v <= 0 for _, v in fluxos):
+        return None
+    t0 = fluxos[0][0]
+    f = lambda r: sum(v / (1 + r) ** ((d - t0).days / 365.25) for d, v in fluxos)
+    lo, hi = -0.99, 10.0
+    if f(lo) * f(hi) > 0:
+        return None
+    for _ in range(200):
+        m = (lo + hi) / 2
+        if f(lo) * f(m) <= 0:
+            hi = m
+        else:
+            lo = m
+    return (lo + hi) / 2
+
+
+def _sim_cotacoes_eur(tickers, moedas, ini, fim):
+    """Cotações diárias ajustadas (dividendos reinvestidos) em euros: DataFrame (dias × tickers)."""
+    import pandas as pd
+    from datetime import timedelta
+    yf = _yf()
+    pedir = sorted(set(tickers))
+    h = _por_ticker(yf.download(pedir, start=(ini - timedelta(days=10)).strftime("%Y-%m-%d"),
+                                end=(fim + timedelta(days=1)).strftime("%Y-%m-%d"), interval="1d", group_by="ticker",
+                                auto_adjust=True, progress=False, threads=True), pedir)
+    precos = {}
+    for t in pedir:
+        df = h.get(t)
+        if df is None or not len(df) or "Close" not in df:
+            continue
+        s = df["Close"].dropna()
+        if getattr(s.index, "tz", None) is not None:
+            s.index = s.index.tz_localize(None)
+        s.index = s.index.normalize()
+        precos[t] = s[~s.index.duplicated(keep="last")]
+    menor = {"GBp": ("GBP", 0.01), "GBX": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
+    precisa = {}
+    for t in precos:
+        m = moedas.get(t) or "EUR"
+        base, fat = menor.get(m, (m.upper() if m else "EUR", 1.0))
+        precisa[t] = (base, fat)
+    pares = sorted({b for b, _ in precisa.values() if b != "EUR"})
+    fx = {}
+    if pares:
+        hf = _por_ticker(yf.download([f"{b}EUR=X" for b in pares], start=(ini - timedelta(days=15)).strftime("%Y-%m-%d"),
+                                     end=(fim + timedelta(days=1)).strftime("%Y-%m-%d"), interval="1d",
+                                     group_by="ticker", auto_adjust=True, progress=False, threads=True),
+                         [f"{b}EUR=X" for b in pares])
+        for b in pares:
+            df = hf.get(f"{b}EUR=X")
+            if df is not None and len(df) and "Close" in df:
+                s = df["Close"].dropna()
+                if not isinstance(s.index, pd.DatetimeIndex):   # sem datas: câmbio fixo (o último)
+                    fx[b] = float(s.iloc[-1])
+                    continue
+                if getattr(s.index, "tz", None) is not None:
+                    s.index = s.index.tz_localize(None)
+                s.index = s.index.normalize()
+                fx[b] = s[~s.index.duplicated(keep="last")]
+    sem_cambio = []
+    tab = pd.DataFrame(precos).sort_index()
+    for t in list(tab.columns):
+        b, fat = precisa[t]
+        if b == "EUR":
+            tab[t] = tab[t] * fat
+        elif b in fx and not hasattr(fx[b], "index"):
+            tab[t] = tab[t] * fat * fx[b]
+        elif b in fx:
+            tab[t] = tab[t] * fat * fx[b].reindex(tab.index.union(fx[b].index)).ffill().bfill().reindex(tab.index)
+        else:
+            sem_cambio.append(t)
+            tab = tab.drop(columns=[t])
+    tab = tab.ffill()
+    return tab.loc[(tab.index >= pd.Timestamp(ini) - pd.Timedelta(days=10)) & (tab.index <= pd.Timestamp(fim))], sem_cambio
+
+
+def _sim_datas_reforco(ini, fim, per):
+    from datetime import timedelta
+    import pandas as pd
+    passo = {"Semanal": None, "Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}.get(per, -1)
+    out, d, k = [], ini, 0
+    if passo == -1:
+        return []
+    while d <= fim:
+        if d > ini:
+            out.append(d)
+        k += 1
+        d = ini + timedelta(weeks=k) if passo is None else (pd.Timestamp(ini) + pd.DateOffset(months=passo * k)).to_pydatetime()
+    return out
+
+
+def _sim_correr(tab, pesos, compras, fim):
+    """Compra nas datas indicadas (dia de bolsa seguinte), dividindo pelos pesos dos títulos com cotação.
+    -> (unidades, investido por título, série diária de valor, série diária de investido, fluxos)."""
+    import pandas as pd
+    idx = tab.index
+    unid = {t: 0.0 for t in pesos}
+    inv_t = {t: 0.0 for t in pesos}
+    caixa, fluxos = 0.0, []
+    planos = {}
+    for d, v in compras:
+        pos = idx.searchsorted(pd.Timestamp(d))
+        if pos >= len(idx):
+            continue
+        planos.setdefault(idx[pos], 0.0)
+        planos[idx[pos]] += v
+    val, inv, investido = [], [], 0.0
+    for dia in idx:
+        if dia in planos:
+            v = planos[dia] + caixa
+            fluxos.append((dia.to_pydatetime(), -planos[dia]))
+            investido += planos[dia]
+            com = {t: w for t, w in pesos.items() if t in tab.columns and pd.notna(tab.at[dia, t]) and tab.at[dia, t] > 0}
+            sw = sum(com.values())
+            if sw > 0:
+                for t, w in com.items():
+                    parte = v * w / sw
+                    unid[t] += parte / tab.at[dia, t]
+                    inv_t[t] += parte
+                caixa = 0.0
+            else:
+                caixa = v                                # ainda nenhum título com cotação: fica à espera
+        tot = caixa + sum(unid[t] * tab.at[dia, t] for t in unid if t in tab.columns and pd.notna(tab.at[dia, t]))
+        val.append(tot)
+        inv.append(investido)
+    serie_v = pd.Series(val, index=idx)
+    serie_i = pd.Series(inv, index=idx)
+    if len(idx):
+        fluxos.append((idx[-1].to_pydatetime(), float(serie_v.iloc[-1])))
+    return unid, inv_t, serie_v, serie_i, fluxos
+
+
+def _sim_maior_queda(serie_v, serie_i):
+    """Maior queda do índice da carteira (rentabilidade diária sem contar os reforços)."""
+    import numpy as np
+    v, i = serie_v.values, serie_i.values
+    idx_ = 1.0
+    pico, pior = 1.0, 0.0
+    for k in range(1, len(v)):
+        entrou = i[k] - i[k - 1]
+        if v[k - 1] > 0:
+            idx_ *= (v[k] - entrou) / v[k - 1]
+        pico = max(pico, idx_)
+        pior = min(pior, idx_ / pico - 1)
+    return pior
+
+
+def simular():
+    """▶ SIMULAR (folha Simulador): calcula à parte e escreve o resultado só nessa folha."""
+    from datetime import datetime as dt_
+    import pandas as pd
+    ex = Excel(FICHEIRO)
+    p = ler_simulador(ex)
+    _sim_gravar(param=p)
+    ini = _sim_data(p["d_ini"])
+    fim = _sim_data(p["d_fim"]) or dt_.now()
+    if not ini or ini >= fim:
+        print("Simulador: escreve uma data inicial anterior à data final.")
+        sys.exit(1)
+    ultima = get_column_letter(len(COLS))
+    r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
+    acoes, etfs = (linhas_por_cabecalho(tab, i) for i, tab in zip((1, 2), r))
+    acoes, etfs = list(acoes), list(etfs)
+    univ = {"Só ações": acoes, "Só ETFs": etfs}.get(p["entre"], acoes + etfs)
+    moedas = {txt(d.get("ticker")).upper(): txt(d.get("moeda")) for d in acoes + etfs if txt(d.get("ticker"))}
+    nomes = {txt(d.get("ticker")).upper(): txt(d.get("nome")) for d in acoes + etfs if txt(d.get("ticker"))}
+    escolha = p["comprar"]
+    if escolha.startswith("Os meus"):
+        sel = [d for d in univ if e_detido(d.get("det")) or (_sim_num(d.get("qtd")) or 0) > 0]
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
+    elif escolha.startswith("Os N"):
+        n = int(p["n"] or 10)
+        sel = sorted([d for d in univ if isinstance(_sim_num(d.get("nota")), (int, float))], key=lambda d: -_sim_num(d["nota"]))[:n]
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
+    elif escolha.startswith("Nota"):
+        m = p["n"] if p["n"] is not None else 4
+        sel = [d for d in univ if isinstance(_sim_num(d.get("nota")), (int, float)) and _sim_num(d["nota"]) >= m]
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
+    else:
+        pesos = {}
+        for t, w in p["carteira"]:
+            pesos[t] = pesos.get(t, 0) + (w if isinstance(w, (int, float)) and w > 0 else 0)
+        if pesos and not any(pesos.values()):
+            pesos = {t: 1.0 for t in pesos}
+        pesos = {t: w for t, w in pesos.items() if w > 0}
+    if not pesos:
+        print(f"Simulador: nenhum título para «{escolha}». Verifica a escolha (e o x/quantidades, a nota ou a carteira).")
+        sys.exit(1)
+    bench = txt(p.get("bench")).upper()
+    falta_moeda = [t for t in list(pesos) + ([bench] if bench else []) if t not in moedas]
+    if falta_moeda:                                       # títulos fora das folhas: moeda pelo Yahoo
+        yf = _yf()
+        for t in falta_moeda:
+            try:
+                moedas[t] = yf.Ticker(t).fast_info.get("currency") or ""
+            except Exception:
+                moedas[t] = ""
+            try:
+                nomes.setdefault(t, txt(yf.Ticker(t).info.get("shortName")) or t)
+            except Exception:
+                nomes.setdefault(t, t)
+    print(f"Simulador: {len(pesos)} título(s) · {escolha} · de {ini:%d/%m/%Y} a {fim:%d/%m/%Y} ...")
+    tab, sem_cambio = _sim_cotacoes_eur(list(pesos) + ([bench] if bench else []), moedas, ini, fim)
+    tab = tab.loc[tab.index >= pd.Timestamp(ini)]
+    if not len(tab):
+        print("Simulador: sem cotações nesse período.")
+        sys.exit(1)
+    compras = []
+    ini_ef = max(ini, tab.index[0].to_pydatetime())       # sem cotações antes disto: a simulação começa aqui
+    if p["ini_sim"].lower().startswith("s") and (p["ini_val"] or 0) > 0:
+        compras.append((ini_ef, float(p["ini_val"])))
+    if p["per"] != "Nenhum" and (p["per_val"] or 0) > 0:
+        compras += [(d, float(p["per_val"])) for d in _sim_datas_reforco(ini, fim, p["per"]) if d >= ini_ef]
+    if not compras:
+        print("Simulador: sem dinheiro investido (investimento inicial e/ou reforço).")
+        sys.exit(1)
+    sem_dados = [t for t in pesos if t not in tab.columns]
+    pesos_ok = {t: w for t, w in pesos.items() if t in tab.columns}
+    unid, inv_t, sv, si, fluxos = _sim_correr(tab, pesos_ok, compras, fim)
+    investido, final = float(si.iloc[-1]), float(sv.iloc[-1])
+    tir = _xirr(fluxos)
+    queda = _sim_maior_queda(sv, si)
+    b_final = b_tir = None
+    sb = None
+    if bench and bench in tab.columns:
+        _, _, sb, _, fb = _sim_correr(tab, {bench: 1.0}, compras, fim)
+        b_final, b_tir = float(sb.iloc[-1]), _xirr(fb)
+    notas = []
+    if sem_dados:
+        notas.append("sem cotações no período: " + ", ".join(sem_dados))
+    if sem_cambio:
+        notas.append("sem câmbio para euros: " + ", ".join(sem_cambio))
+    if bench and bench not in tab.columns:
+        notas.append(f"comparação {bench}: sem cotações")
+    tarde = [t for t in pesos_ok if tab[t].first_valid_index() is not None and
+             tab[t].first_valid_index() > tab.index[0] + pd.Timedelta(days=10)]
+    if tarde:
+        notas.append("só com cotações depois do início (entram quando começam): " + ", ".join(tarde[:12]))
+    if ini_ef > ini + pd.Timedelta(days=7):
+        notas.append(f"sem cotações antes de {ini_ef:%d/%m/%Y}: a simulação começa aí")
+    if not escolha.startswith("Carteira") and not escolha.startswith("Os meus"):
+        notas.append("escolha feita pela nota de hoje: o passado fica favorecido")
+    resumo = [("F13", investido), ("F14", final), ("F15", final - investido),
+              ("F16", (final / investido - 1) if investido else None), ("F17", tir), ("F18", queda or 0),
+              ("F19", b_final if b_final is not None else (f"(sem {bench})" if bench else "–")),
+              ("F20", b_tir), ("F21", f"{len(pesos_ok)} de {len(pesos)}"),
+              ("F22", f"{tab.index[0]:%d/%m/%Y} a {tab.index[-1]:%d/%m/%Y} · {len(compras)} compra(s)"),
+              ("F23", "; ".join(notas) or "–")]
+    titulos = []
+    for t in sorted(pesos_ok, key=lambda t: -(unid[t] * (tab[t].iloc[-1] or 0))):
+        vf = unid[t] * float(tab[t].iloc[-1]) if pd.notna(tab[t].iloc[-1]) else 0.0
+        titulos.append([nomes.get(t, t), t, round(inv_t[t], 2), round(vf, 2), (vf / inv_t[t] - 1) if inv_t[t] else None])
+    n_ = len(sv.index)                              # 150 pontos espaçados (o gráfico usa sempre as 150 linhas)
+    pts = [sv.index[round(k * (n_ - 1) / (SIM_MAX_SER - 1))] for k in range(SIM_MAX_SER)] if n_ >= SIM_MAX_SER \
+        else list(sv.index)
+    serie = [[d_.to_pydatetime(), round(float(si[d_]), 2), round(float(sv[d_]), 2),
+              round(float(sb[d_]), 2) if sb is not None else None] for d_ in pts]
+    vazio = lambda nl, nc: [[None] * nc for _ in range(nl)]
+    tit_w = (titulos + vazio(SIM_MAX_TIT, 5))[:SIM_MAX_TIT]
+    ser_w = (serie + vazio(SIM_MAX_SER, 4))[:SIM_MAX_SER]
+    ops = [{"op": "escrever", "folha": FOLHA_SIM, "rng": cel, "valores": [[v]]} for cel, v in resumo]
+    ops += [{"op": "escrever", "folha": FOLHA_SIM, "rng": f"N{SIM_LIN_TIT}:R{SIM_LIN_TIT + SIM_MAX_TIT - 1}",
+             "valores": tit_w},
+            {"op": "escrever", "folha": FOLHA_SIM, "rng": f"U{SIM_LIN_SER}:X{SIM_LIN_SER + SIM_MAX_SER - 1}",
+             "valores": ser_w}]
+    ex.ops(ops, guardar=True)
+    _sim_gravar(res={"resumo": resumo, "titulos": titulos,
+                     "serie": [[d_.strftime("%Y-%m-%d"), a, b, c] for d_, a, b, c in serie]})
+    print(f"Investido € {investido:,.2f} -> valor final € {final:,.2f} ({(final / investido - 1):+.1%}); "
+          f"TIR {tir:+.2%}/ano" if tir is not None else f"Investido € {investido:,.2f} -> € {final:,.2f}")
+    if b_final is not None:
+        print(f"Comparação {bench}: € {b_final:,.2f}" + (f" (TIR {b_tir:+.2%}/ano)" if b_tir is not None else ""))
+
+
 FICH_TEMPOS = os.path.join(PASTA, "_Painel_acoes_tempos.json")   # durações das últimas execuções (estimativa)
 
 
@@ -6726,7 +7250,7 @@ def acao_do_botao(arg):
     """(chave, descrição) da ação pedida, para a janela de progresso e para a estimativa do tempo."""
     a = arg.lower()
     for chave, padrao, txt_ in (
-            ("reclassificar", "reclassificar", "Reclassificar e reordenar"),
+            ("reclassificar", "reclassificar", "Reclassificar e reordenar"), ("simular", "simular", "Simulador"),
             ("ordenar", "ordenar", "Ordenar"),
             ("procurar", "procurar", "Procurar"), ("top", "://top", "Mais significativas"),
             ("base", "://base", "Lista base"), ("acrescentar", "acrescentar", "Acrescentar marcados"),
