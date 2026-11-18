@@ -542,7 +542,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V067", "18/11/2026"
+VERSAO, DATA_VERSAO = "V068", "18/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -775,6 +775,13 @@ def folha_carteira(wb, linhas, etfs):
     p2.dataLabels = rotulos()
     p2.width, p2.height = 12, 9
     ws.add_chart(p2, "K26")
+    p2a = PieChart()                                    # ao lado: a mesma divisão, mas pelo valor atual
+    p2a.title = "Ações vs ETFs (valor atual, € e %)"
+    p2a.add_data(Reference(ws, min_col=4, min_row=r0 + 1, max_row=r0 + 2), titles_from_data=False)
+    p2a.set_categories(Reference(ws, min_col=1, min_row=r0 + 1, max_row=r0 + 2))
+    p2a.dataLabels = rotulos()
+    p2a.width, p2a.height = 12, 9
+    ws.add_chart(p2a, "R26")
     b = BarChart()
     b.type, b.grouping, b.overlap = "col", "stacked", 100
     b.title = "Cada título: valor de compra, + lucro (verde) / − prejuízo (vermelho)"
@@ -824,7 +831,7 @@ def folha_carteira(wb, linhas, etfs):
             p3.series[0].dPt.append(pt)
         p3.dataLabels = rotulos()
         p3.width, p3.height = 16, 11
-        ws.add_chart(p3, "R26")
+        ws.add_chart(p3, "Y26")
 
 
 QUADRO = None         # dados da janela da posição (depois de cada ▶ ATUALIZAR)
@@ -5059,8 +5066,10 @@ function graficos(){
     .map(d=>({n:d.n,c:d.ce,a:d.vd,tp:d.tp})).sort((x,y)=>y.c-x.c);
   if(!t.length)return '<p class="vazio">Escreve o nº de ações e o preço médio de compra nas folhas Ações / ETFs para ver os gráficos.</p>';
   const ca=t.filter(x=>x.tp==='Ação').reduce((s,x)=>s+x.c,0), ce=t.filter(x=>x.tp==='ETF').reduce((s,x)=>s+x.c,0);
+  const va=t.filter(x=>x.tp==='Ação').reduce((s,x)=>s+x.a,0), ve=t.filter(x=>x.tp==='ETF').reduce((s,x)=>s+x.a,0);
   return tarte(t.map(x=>({n:x.n,v:x.c})),'Carteira por valor de compra (€ e %)')
     +tarte([{n:'Ações',v:ca,cor:'#4e79a7'},{n:'ETFs',v:ce,cor:'#f28e2b'}].filter(x=>x.v),'Ações vs ETFs (valor de compra)')
+    +tarte([{n:'Ações',v:va,cor:'#4e79a7'},{n:'ETFs',v:ve,cor:'#f28e2b'}].filter(x=>x.v),'Ações vs ETFs (valor atual)')
     +tarte(lucros(t),'Lucros (verde) e prejuízos (vermelho) por título',true)
     +barras(t);
 }
