@@ -569,7 +569,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V092", "19/11/2026"
+VERSAO, DATA_VERSAO = "V093", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1288,6 +1288,12 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
         ws[c].fill = PatternFill("solid", fgColor="FFF2CC")
         ws[c].border = Border(*(Side(style="thin", color="A6A6A6"),) * 4)
     ws[C_DATAREF].number_format = "dd/mm/yyyy"
+    from openpyxl.formatting.rule import FormulaRule as _FR      # valores que só contam com uma escolha: cinzento
+    _cz, _fz = PatternFill("solid", bgColor="808080"), Font(color="BFBFBF")
+    for cel_, f_ in ((C_SEL_V, f'LEFT(${C_SEL[0]}${C_SEL[1:]},2)<>"NG"'),
+                     (C_ORD_MIN, f'${C_ORD[0]}${C_ORD[1:]}<>"Melhor preço com nota ≥ (valor ao lado)"'),
+                     (C_DATAREF, f'${C_REF[0]}${C_REF[1:]}<>"Data (escrever ao lado)"')):
+        ws.conditional_formatting.add(cel_, _FR(formula=[f_], fill=_cz, font=_fz))
     dvr = DataValidation(type="list", formula1='"' + ",".join(REFS) + '"', allow_blank=False)
     ws.add_data_validation(dvr)
     dvr.add(C_REF)
@@ -2970,6 +2976,10 @@ def folha_pesos(wb):
         ws.column_dimensions[col].width = 14
     for col, w in zip("ABCDE", (2, 30, 70, 11, 11)):
         ws.column_dimensions[col].width = w
+    cz, fz = PatternFill("solid", bgColor="808080"), Font(color="BFBFBF")   # sem x: o que depende dele a cinzento
+    ws.conditional_formatting.add("D18:E19", FormulaRule(formula=['LOWER(TRIM($E$16))<>"x"'], fill=cz, font=fz))
+    ws.conditional_formatting.add(f"D23:E{22 + len(TRAVOES_CARO)}",
+                                  FormulaRule(formula=['LOWER(TRIM($E$21))<>"x"'], fill=cz, font=fz))
 
 
 def texto_pesos(ranking=True):
