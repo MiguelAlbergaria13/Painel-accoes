@@ -406,6 +406,7 @@ CRITERIOS_ORD = [
     ("Detidos (x): resultado decrescente", "det_lp_desc", True),
     ("Detidos (x): resultado crescente", "det_lp_asc", True),
     ("Melhor preço para comprar (nível de preço)", "nivel_preco", True),
+    ("Melhor preço com nota ≥ (valor ao lado)", "bp_min", True),
     ("Analistas (alvo / preço)", "pot", True),
     ("Valor justo (justo / preço)", "justo_pct", True),
     ("Qualidade (0-5)", "qual", True),
@@ -426,6 +427,14 @@ ORD_PADRAO = {1: CRITERIOS_ORD[0][0], 2: CRITERIOS_ORD[0][0]}    # as duas folha
 # barra de topo (V012): linha 3 = ▶ ATUALIZAR (A:D) · o que atualizar (E:G) · Ordenar por (H, I:L) · ↕ ORDENAR (M:N) ·
 # estado (O); linha 4 = ↻ PREÇOS (A:D) · longo prazo mín. (E:F, G) · Situação em (H, I:J, K); linha 5 = bolsas
 C_ORD = "I3"
+C_ORD_MIN = "L3"     # nota mínima para «Melhor preço com nota ≥»
+ORD_MIN = {"v": 4.0}
+FICH_ORD_MIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_Painel_acoes_ordem_minimo.json")
+try:
+    with open(FICH_ORD_MIN, encoding="utf-8") as _f:
+        ORD_MIN["v"] = float(json.load(_f).get("v", 4.0))
+except Exception:
+    pass
 C_SEL = "E3"          # o que atualizar: Tudo / Assinalados / NG ≥ x
 C_AT = "O3"           # "Atualizado em ..."
 C_ORD_EST = "O4"
@@ -488,6 +497,13 @@ def chave_ordem(criterio):
         p = d.get("pont")
         p = p if isinstance(p, (int, float)) else 0
         nt = d.get("nota") if isinstance(d.get("nota"), (int, float)) else p
+        if k == "bp_min":               # nota ≥ mínimo primeiro, pelo melhor preço (nível); depois os outros
+            nv, jp = d.get("nivel_preco"), d.get("justo_pct")
+            ok = isinstance(nt, (int, float)) and d.get("nota") is not None and nt >= ORD_MIN["v"] and \
+                isinstance(nv, (int, float))
+            if ok:
+                return (0, -nv, -(jp if isinstance(jp, (int, float)) else -9), -nt) + desempate(d)
+            return (1, 0, 0, -nt, -p) + desempate(d)
         if k == "det":                  # detidos primeiro; dentro de cada grupo, pela nota global e pelo desempate
             return (not e_detido(v), -nt, -p) + desempate(d)
         if k in ("det_lp_desc", "det_lp_asc"):   # detidos primeiro, pelo lucro / prejuízo (€); depois os outros
@@ -553,7 +569,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V090", "19/11/2026"
+VERSAO, DATA_VERSAO = "V091", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1221,7 +1237,17 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     ws["H3"] = "Ordenar por:"
     ws["H3"].font = Font(bold=True)
     ws["H3"].alignment = Alignment(horizontal="right", vertical="center")
-    campo("I3:L3", criterio)
+    campo("I3:K3", criterio)
+    try:
+        with open(FICH_ORD_MIN, encoding="utf-8") as f:
+            ORD_MIN["v"] = float(json.load(f).get("v", 4.0))
+    except Exception:
+        pass
+    ws[C_ORD_MIN] = ORD_MIN["v"]
+    ws[C_ORD_MIN].number_format = '"≥ "0.0'
+    ws[C_ORD_MIN].fill = PatternFill("solid", fgColor="FFF2CC")
+    ws[C_ORD_MIN].font = Font(bold=True)
+    ws[C_ORD_MIN].alignment = Alignment(horizontal="center", vertical="center")
     col_l = get_column_letter(len(COLS) + 3)          # opções do "Ordenar por" (lista > 255 caracteres)
     for i, c in enumerate(CRITERIOS_ORD, 1):
         ws[f"{col_l}{i}"] = c[0]
@@ -4446,13 +4472,27 @@ def txt(v):
 MAX_LINHAS = 400
 
 
+def _ord_min_de(v):
+    """Lê o mínimo de L3 (ao lado do «Ordenar por») e guarda-o para a próxima reconstrução da folha."""
+    try:
+        x = v[0][0] if isinstance(v, (list, tuple)) else v
+        x = float(str(x).replace("≥", "").replace(",", ".").strip())
+        ORD_MIN["v"] = x
+        with open(FICH_ORD_MIN, "w", encoding="utf-8") as f:
+            json.dump({"v": x}, f)
+    except Exception:
+        pass
+
+
 def ordenar(idx):
     """Reordena a folha idx (1 = Ações, 2 = ETFs) pelo critério escolhido em D3, sem descarregar nada."""
     ex = Excel(FICHEIRO)
     ultima = get_column_letter(len(COLS))
     r = ex.ops([{"op": "ler", "folha": idx, "rng": C_ORD},
-                {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"}])
+                {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"},
+                {"op": "ler", "folha": idx, "rng": C_ORD_MIN}])
     criterio = txt(r[0][0][0]) or ORD_PADRAO[idx]
+    _ord_min_de(r[2])
     cab, dados = [txt(v) for v in r[1][0]], r[1][1:]
     chaves = {h: k for k, h, *_ in COLS}
     chaves.update({h: k for k, h in CAB_ETF.items()})
@@ -4818,6 +4858,10 @@ def atualizar_precos(reclassificar=False):
     for idx in (1, 2):
         if passada[idx]:
             print(f"A folha {'Ações' if idx == 1 else 'ETFs'} está numa data passada: os preços dela ficam como estão.")
+    try:
+        _ord_min_de(ex.ops([{"op": "ler", "folha": 1, "rng": C_ORD_MIN}])[0])
+    except Exception:
+        pass
     r = ex.ops([op for idx in (1, 2) for op in (
         {"op": "ler", "folha": idx, "rng": C_ORD},
         {"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"})])
@@ -6956,7 +7000,7 @@ def folha_simulador(wb):
         ws.cell(r, 21).number_format = "dd/mm/yyyy"
         for j in (22, 23, 24, 25):
             ws.cell(r, j).number_format = '"€" #,##0'
-    for j, h in enumerate(("Data", "Investido", "Carteira", "Comparação", "Investido + inflação"), 21):
+    for j, h in enumerate(("Data", "Investido", "Carteira", "Comparação", "Carteira descontada da inflação"), 21):
         ws.cell(SIM_LIN_SER - 1, j, h).font = Font(bold=True)
     for col in "UVWXY":
         ws.column_dimensions[col].hidden = True
@@ -6997,7 +7041,7 @@ def folha_simulador(wb):
 
 SIM_RESUMO = ["Total investido", "Valor final", "Ganho (€)", "Ganho (% do investido)",
               "Rendimento anual (TIR, conta as datas dos reforços)",
-              "Investido + inflação (valor para manter o poder de compra)", "Ganho real (acima da inflação)",
+              "Valor final descontado da inflação (em € da data inicial)", "Ganho real (acima da inflação)",
               "Inflação acumulada (data inicial → final)", "Maior queda pelo caminho (sem contar reforços)",
               "Comparação: valor final com o mesmo dinheiro", "Comparação: rendimento anual (TIR)", "Títulos comprados",
               "Período", "Notas"]
@@ -7969,8 +8013,9 @@ def simular():
         notas.append(f"inflação: {infl_fonte}")
     else:
         infl_fim = infl_acum = None
+    final_real = final / (1 + infl_acum) if infl_acum is not None else None
     vals = [investido, final, final - investido, (final / investido - 1) if investido else None, tir,
-            infl_fim, (final - infl_fim) if infl_fim is not None else None, infl_acum, queda or 0,
+            final_real, (final - infl_fim) if infl_fim is not None else None, infl_acum, queda or 0,
             b_final if b_final is not None else (f"(sem {bench})" if bench else "–"), b_tir,
             f"{len(pesos_ok)} de {len(pesos)}" if not dinamico else
             f"{sum(1 for t in unid if unid[t] > 0)} na carteira no fim; {len(vezes)} escolhidos pelo caminho",
@@ -7991,7 +8036,12 @@ def simular():
     n_ = len(sv.index)                              # 150 pontos espaçados (o gráfico usa sempre as 150 linhas)
     pts = [sv.index[round(k * (n_ - 1) / (SIM_MAX_SER - 1))] for k in range(SIM_MAX_SER)] if n_ >= SIM_MAX_SER \
         else list(sv.index)
-    ci = corrigido(pts) if infl_s is not None else [None] * len(pts)
+    if infl_s is not None:                          # carteira em euros da data inicial (descontada da inflação)
+        niv_p = _sim_infl_em(infl_s, pts)
+        n_ini = _sim_infl_em(infl_s, [sv.index[0]])[0]
+        ci = [float(sv[d_]) * n_ini / nv for d_, nv in zip(pts, niv_p)]
+    else:
+        ci = [None] * len(pts)
     serie = [[d_.to_pydatetime(), round(float(si[d_]), 2), round(float(sv[d_]), 2),
               round(float(sb[d_]), 2) if sb is not None else None, round(c_, 2) if c_ is not None else None]
              for d_, c_ in zip(pts, ci)]
