@@ -407,6 +407,7 @@ CRITERIOS_ORD = [
     ("Detidos (x): resultado crescente", "det_lp_asc", True),
     ("Melhor preço para comprar (nível de preço)", "nivel_preco", True),
     ("Melhor preço com nota igual ou maior a (valor ao lado)", "bp_min", True),
+    ("Melhor nota com nível de preço igual ou maior a (valor ao lado)", "nt_npmin", True),
     ("Analistas (alvo / preço)", "pot", True),
     ("Valor justo (justo / preço)", "justo_pct", True),
     ("Qualidade (0-5)", "qual", True),
@@ -506,6 +507,11 @@ def chave_ordem(criterio):
             if ok:
                 return (0, -nv, -(jp if isinstance(jp, (int, float)) else -9), -nt) + desempate(d)
             return (1, 0, 0, -nt, -p) + desempate(d)
+        if k == "nt_npmin":             # nível de preço ≥ mínimo primeiro, pela nota global; depois os outros
+            nv = d.get("nivel_preco")
+            if isinstance(nv, (int, float)) and round(nv, 1) >= ORD_MIN["v"] - 1e-9:
+                return (0, -nt, -nv, -p) + desempate(d)
+            return (1, -nt, -p) + desempate(d)
         if k == "det":                  # detidos primeiro; dentro de cada grupo, pela nota global e pelo desempate
             return (not e_detido(v), -nt, -p) + desempate(d)
         if k in ("det_lp_desc", "det_lp_asc"):   # detidos primeiro, pelo lucro / prejuízo (€); depois os outros
@@ -571,7 +577,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V095", "19/11/2026"
+VERSAO, DATA_VERSAO = "V098", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1293,7 +1299,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     from openpyxl.formatting.rule import FormulaRule as _FR      # valores que só contam com uma escolha: cinzento
     _cz, _fz = PatternFill("solid", bgColor="808080"), Font(color="BFBFBF")
     for cel_, f_ in ((C_SEL_V, f'LEFT(${C_SEL[0]}${C_SEL[1:]},2)<>"NG"'),
-                     (C_ORD_MIN, f'${C_ORD[0]}${C_ORD[1:]}<>"Melhor preço com nota igual ou maior a (valor ao lado)"'),
+                     (C_ORD_MIN, f'AND(${C_ORD[0]}${C_ORD[1:]}<>"Melhor preço com nota igual ou maior a (valor ao lado)",${C_ORD[0]}${C_ORD[1:]}<>"Melhor nota com nível de preço igual ou maior a (valor ao lado)")'),
                      (C_DATAREF, f'${C_REF[0]}${C_REF[1:]}<>"Data (escrever ao lado)"')):
         ws.conditional_formatting.add(cel_, _FR(formula=[f_], fill=_cz, font=_fz))
     dvr = DataValidation(type="list", formula1='"' + ",".join(REFS) + '"', allow_blank=False)
@@ -4962,7 +4968,7 @@ h1{font-size:17px;margin:0 0 2px;font-weight:600}
 .tabs{display:flex;gap:6px;margin-top:8px}
 .tab{flex:1;border:0;border-radius:8px;padding:8px 4px;background:rgba(255,255,255,.15);color:#fff;font-size:14px}
 .tab.on{background:#fff;color:#1f3b57;font-weight:600}
-.bar{display:flex;gap:6px;margin-top:8px}
+.bar{display:flex;gap:6px;margin-top:8px}.bar select{flex:1.4;min-width:0}#nmb{display:none;align-items:center;gap:8px;margin-top:6px;color:#fff;font-size:14px}#nmb input{flex:0 0 70px;text-align:center;font-weight:700}
 input,select{font-size:14px;border:0;border-radius:8px;padding:8px 10px}
 input{flex:1;min-width:0}
 main{padding:8px 10px 40px}
@@ -5012,8 +5018,8 @@ main{padding:8px 10px 40px}
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
 <div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="G">Gráficos</button></div>
-<div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><input id="nm" type="number" min="0" max="5" step="0.1" value="4" title="Nota global igual ou maior a" style="display:none;width:58px"><select id="o">
-<option value="nt">Nota global</option><option value="bp">Melhor preço para comprar</option><option value="bpm">Mais barata primeiro, nota igual ou maior a…</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
+<div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
+<option value="nt">Nota global</option><option value="bp">Melhor preço para comprar</option><option value="bpm">Mais barata primeiro, nota igual ou maior a…</option><option value="ntp">Melhor nota, nível de preço igual ou maior a…</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div><div id="nmb"><span id="nml">Nota global igual ou maior a</span><input id="nm" type="text" inputmode="decimal" value="4"><span style="opacity:.75">(0 a 5)</span></div>
 </header>
 <div id="glob" style="display:none"></div>
 <div id="qd" style="display:none;position:fixed;top:70px;left:8px;right:8px;z-index:20;background:#fffbe6;color:#222;border:1px solid #c9b458;border-radius:12px;padding:10px 34px 10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:13px;line-height:1.5"><button id="qdx" style="position:absolute;top:6px;right:6px;width:24px;height:24px;border:0;border-radius:50%;background:#d93025;color:#fff;font-weight:700">✕</button><div id="qdt"></div></div>
@@ -5184,12 +5190,20 @@ function lucros(t){
   const g=t.filter(x=>x.a>x.c).sort((x,y)=>(y.a-y.c)-(x.a-x.c)), p=t.filter(x=>x.a<x.c).sort((x,y)=>(x.a-x.c)-(y.a-y.c));
   return g.map((x,i)=>({n:x.n,v:x.a-x.c,s:1,cor:VD[i%VD.length]})).concat(p.map((x,i)=>({n:x.n,v:x.c-x.a,s:-1,cor:VM[i%VM.length]})));
 }
+function minimo(){const m=parseFloat(String(document.getElementById('nm').value).replace(',','.'));return isNaN(m)?0:m;}
+function campoMin(){const o=document.getElementById('o').value,v=o==='bpm'||o==='ntp',nm=document.getElementById('nm');
+  document.getElementById('nmb').style.display=v&&aba!=='G'?'flex':'none';
+  if(v){let x=null;try{x=localStorage.getItem('nm_v_'+o);}catch(e){}nm.value=x||(o==='ntp'?'3,5':'4');
+    document.getElementById('nml').textContent=o==='ntp'?'Nível de preço igual ou maior a':'Nota global igual ou maior a';}}
 function mostrar(){
   const q=document.getElementById('q').value.trim().toLowerCase(), o=document.getElementById('o').value;
   const prep=l=>{if(q) l=l.filter(d=>(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q));
     if(o.includes(':')){const [k,dr]=o.split(':'),g=d=>{const v=k.startsWith('o.')?(d.or||{})[k.slice(2)]:d[k];return typeof v==='number'?v:null;};
       return l.slice().sort((a,b)=>{const x=g(a),y=g(b);if(x==null&&y==null)return (b.nt??-9)-(a.nt??-9);if(x==null)return 1;if(y==null)return -1;return dr==='a'?x-y:y-x;});}
-    if(o==='bpm'){const m=parseFloat(document.getElementById('nm').value),mn=isNaN(m)?0:m,g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9,
+    if(o==='ntp'){const mn=minimo(),
+        ok=d=>d.np!=null&&Math.round(d.np*10)/10>=mn-1e-9;   // primeiro os que têm o nível de preço pedido, pela nota
+      return l.slice().sort((a,b)=>(ok(b)-ok(a))||((b.nt??-9)-(a.nt??-9))||((b.np??-9)-(a.np??-9)));}
+    if(o==='bpm'){const mn=minimo(),g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9,
         ok=d=>d.nt!=null&&Math.round(d.nt*10)/10>=mn-1e-9&&d.np!=null;   // primeiro os que cumprem a nota, do mais barato ao mais caro
       return l.slice().sort((a,b)=>(ok(b)-ok(a))||(ok(a)?(g(b)-g(a))||(j(b)-j(a))||((b.nt??-9)-(a.nt??-9)):((b.nt??-9)-(a.nt??-9))));}
     if(o==='bp'){const g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9;   // nível de preço (5 = muito barata); empate: valor justo
@@ -5202,6 +5216,7 @@ function mostrar(){
   const el=document.getElementById('lst');
   let h='';
   document.querySelector('.bar').style.display=aba==='G'?'none':'flex';
+  {const o2=document.getElementById('o').value;document.getElementById('nmb').style.display=(o2==='bpm'||o2==='ntp')&&aba!=='G'?'flex':'none';}
   if(aba==='G'){el.innerHTML=graficos();return;}
   if(aba==='X'){
     const a=prep(D.a.filter(d=>d.x)), e=prep(D.e.filter(d=>d.x));
@@ -5216,10 +5231,8 @@ function mostrar(){
 document.querySelectorAll('.tabs .tab').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tabs .tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
 document.getElementById('q').addEventListener('input',mostrar);
-document.getElementById('o').addEventListener('change',()=>{const v=document.getElementById('o').value==='bpm';
-  document.getElementById('nm').style.display=v?'':'none';try{localStorage.setItem('nm_o',document.getElementById('o').value);}catch(e){}mostrar();});
-document.getElementById('nm').addEventListener('input',()=>{try{localStorage.setItem('nm_v',document.getElementById('nm').value);}catch(e){}mostrar();});
-try{const v=localStorage.getItem('nm_v');if(v)document.getElementById('nm').value=v;}catch(e){}
+document.getElementById('o').addEventListener('change',()=>{campoMin();mostrar();});
+document.getElementById('nm').addEventListener('input',()=>{try{localStorage.setItem('nm_v_'+document.getElementById('o').value,document.getElementById('nm').value);}catch(e){}mostrar();});
 mostrar();
 </script>
 </body>
@@ -6976,6 +6989,11 @@ def folha_simulador(wb):
     from openpyxl.formatting.rule import FormulaRule
     cod_f = 'IFERROR(VALUE(LEFT($C$6,FIND(" ",$C$6&" ")-1)),0)'
     cinza = PatternFill("solid", bgColor="808080")
+    _nn, _nu = '"N: quantos títulos →"', '"(F6 não se usa nesta opção)"'
+    ws["E6"] = (f'=CHOOSE({cod_f}+1,{_nu},{_nu},{_nn},"Nota global mínima (hoje) →",{_nu},{_nn},'
+                f'"Nota mínima em cada data →",{_nu},{_nu},{_nn},{_nn},"Nível de preço mínimo (5 = muito barata) →",'
+                f'"Nível de preço mínimo em cada data (5 = muito barata) →")')
+    ws["E6"].font = Font(bold=True, color="7030A0")
     usa = {"F6": (2, 3, 5, 6, 9, 10, 11, 12), "C7:D7": (1, 2, 3, 5, 6, 9, 11), "C10:D10": (5, 6, 8, 10, 12),
            "C11:D11": (7, 8), "F11": (7, 8), "C12:D12": (7, 8), "F12": (7, 8), "C13:D13": (5, 6, 8, 9, 10, 11, 12),
            "F5": (1, 2, 3, 4, 5, 6, 9, 10, 11, 12),
@@ -6983,9 +7001,9 @@ def folha_simulador(wb):
     for rng_, cods in usa.items():                       # não conta para a escolha feita em «Comprar» -> cinzento
         f_ = "NOT(OR(" + ",".join(f"{cod_f}={c}" for c in cods) + "))"
         ws.conditional_formatting.add(rng_, FormulaRule(formula=[f_], fill=cinza, font=Font(color="BFBFBF")))
-    ws["E13"] = ("(opções 5, 6, 8: não se compra nenhum título com nota abaixo disto na data da compra — só com dados "
-                 "antigos a nota das ações vai no máximo a ≈4,2; opção 9: só entram os de nota global de hoje ≥ isto; "
-                 "vazio = sem mínimo)")
+    ws["E13"] = ("(opções 5, 6, 8, 10, 12: não se compra nenhum título com nota abaixo disto na data da compra — só com "
+                 "dados antigos a nota das ações vai no máximo a ≈4,2; opções 9 e 11: só entram os de nota global de hoje "
+                 "≥ isto; vazio = sem mínimo)")
     ws["E13"].font = Font(italic=True, size=9, color="808080")
     ws["G11"] = ("(só em «N primeiras ações + N primeiros ETFs»: cada reforço põe estes valores em cada parte, na "
                  "periodicidade escolhida; o investimento inicial reparte-se na mesma proporção)")
