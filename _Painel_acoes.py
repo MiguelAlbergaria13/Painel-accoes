@@ -553,7 +553,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V083", "19/11/2026"
+VERSAO, DATA_VERSAO = "V090", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -6726,20 +6726,25 @@ SIM_COMPRAR = ["1 · Os meus títulos (com x)",
                "2 · Os N melhores pela nota global de hoje",
                "3 · Nota global de hoje ≥ valor",
                "4 · A carteira da tabela (tickers e pesos)",
-               "5 · Os N melhores pela nota de preços de cada data",
-               "6 · Nota de preços de cada data ≥ valor",
+               "5 · Os N melhores pela nota do painel em cada data",
+               "6 · Nota do painel em cada data ≥ valor",
                "7 · N ações + N ETFs, nota global de hoje",
-               "8 · N ações + N ETFs, nota de preços de cada data"]
+               "8 · N ações + N ETFs, nota do painel em cada data",
+               "9 · Os N com melhor preço (nível de preço) e nota global ≥ mínimo (hoje)",
+               "10 · Os N com melhor preço em cada data e nota ≥ mínimo (só ações dos EUA, dados da SEC)"]
 
 
 def _sim_cod(t):
     """Número (1 a 8) da escolha «Comprar» (aceita também os textos das versões anteriores)."""
     t = txt(t).strip()
-    if t[:1].isdigit():
-        return int(t[0])
+    m_ = re.match(r"(\d+)", t)
+    if m_:
+        return int(m_.group(1))
     lt = t.lower()
     if lt.startswith("n primeiras ações"):
         return 8 if "cada data" in lt else 7
+    if lt.startswith("os n com melhor preço"):
+        return 9
     for k, ini in ((1, "os meus"), (2, "os n primeiros"), (3, "nota global"), (4, "carteira"),
                    (5, "n primeiros pela nota de preços"), (6, "nota de preços")):
         if lt.startswith(ini):
@@ -6750,7 +6755,8 @@ SIM_ENTRE = ["Ações e ETFs", "Só ações", "Só ETFs"]
 SIM_PADRAO = {"ini_sim": "Sim", "ini_val": 10000, "per": "Mensal", "per_val": 200, "comprar": SIM_COMPRAR[1],
               "infl": "Portugal",
               "n": 10, "entre": SIM_ENTRE[0], "d_ini": "01/01/2016", "d_fim": "", "bench": "IWDA.AS",
-              "carteira": [], "rodar": SIM_RODAR[0], "n_a": 5, "v_a": 150, "n_e": 3, "v_e": 100}
+              "carteira": [], "rodar": SIM_RODAR[0], "n_a": 5, "v_a": 150, "n_e": 3, "v_e": 100,
+              "nota_min": 4}
 SIM_LIN_CART, SIM_MAX_CART = 16, 30          # carteira escolhida: B16:C45
 SIM_LIN_TIT, SIM_MAX_TIT = 16, 60            # resultado por título: N16:R75
 SIM_R0 = 15                                  # resumo do resultado: E15:F25
@@ -6810,7 +6816,7 @@ def _sim_data(v):
 
 def ler_simulador(ex):
     """Escolhas da folha Simulador (como estão agora no Excel)."""
-    r = ex.ops([{"op": "ler", "folha": FOLHA_SIM, "rng": "C4:F12"},
+    r = ex.ops([{"op": "ler", "folha": FOLHA_SIM, "rng": "C4:F13"},
                 {"op": "ler", "folha": FOLHA_SIM, "rng": f"B{SIM_LIN_CART}:C{SIM_LIN_CART + SIM_MAX_CART - 1}"}])
     v, cart = r[0], r[1]
     g = lambda i, j: sem_esp(v[i][j]) if i < len(v) and j < len(v[i]) else None
@@ -6818,7 +6824,7 @@ def ler_simulador(ex):
          "per_val": _sim_num(g(1, 3)) or 0, "comprar": txt(g(2, 0)) or SIM_COMPRAR[0], "n": _sim_num(g(2, 3)),
          "entre": txt(g(3, 0)) or SIM_ENTRE[0], "d_ini": g(4, 0), "d_fim": g(4, 3), "bench": txt(g(5, 0)),
          "rodar": txt(g(6, 0)) or SIM_RODAR[0], "n_a": _sim_num(g(7, 0)), "v_a": _sim_num(g(7, 3)),
-         "n_e": _sim_num(g(8, 0)), "v_e": _sim_num(g(8, 3)),
+         "n_e": _sim_num(g(8, 0)), "v_e": _sim_num(g(8, 3)), "nota_min": _sim_num(g(9, 0)),
          "carteira": [[txt(sem_esp(a)).upper(), _sim_num(sem_esp(b))] for a, b, *_ in (cart or [])
                       if re.fullmatch(r"[A-Za-z0-9.\-^=]{1,15}", txt(sem_esp(a)) or "")]}
     for k in ("d_ini", "d_fim"):
@@ -6878,14 +6884,15 @@ def folha_simulador(wb):
             c.number_format = fmt
     linhas_e = [("Investimento inicial", "C4", p["ini_sim"], ["Sim", "Não"], "Valor (€)", "F4", p["ini_val"]),
                 ("Reforço periódico", "C5", p["per"], SIM_PERIODOS, "Valor de cada reforço (€)", "F5", p["per_val"]),
-                ("Comprar", "C6", p["comprar"], SIM_COMPRAR, "N ou nota mínima (opções 2, 3, 5, 6)", "F6", p["n"]),
+                ("Comprar", "C6", p["comprar"], SIM_COMPRAR, "N ou nota mínima (opções 2, 3, 5, 6, 9)", "F6", p["n"]),
                 ("Entre", "C7", p["entre"], SIM_ENTRE, None, None, None),
                 ("Data inicial", "C8", _sim_data(p["d_ini"]) or p["d_ini"], None, "Data final (vazio = hoje)", "F8",
                  _sim_data(p["d_fim"]) or p["d_fim"]),
                 ("Comparar com (ticker Yahoo)", "C9", p["bench"], None, None, None, None),
                 ("Ao reclassificar (em cada data)", "C10", p.get("rodar") or SIM_RODAR[0], SIM_RODAR, None, None, None),
                 ("Ações: N primeiras", "C11", p.get("n_a"), None, "€ em ações por reforço", "F11", p.get("v_a")),
-                ("ETFs: N primeiros", "C12", p.get("n_e"), None, "€ em ETFs por reforço", "F12", p.get("v_e"))]
+                ("ETFs: N primeiros", "C12", p.get("n_e"), None, "€ em ETFs por reforço", "F12", p.get("v_e")),
+                ("Nota mínima (opções 5, 6, 8, 9)", "C13", p.get("nota_min"), None, None, None, None)]
     for rot, cel, v, itens, rot2, cel2, v2 in linhas_e:
         r = int(cel[1:])
         ws[f"B{r}"] = rot
@@ -6902,6 +6909,10 @@ def folha_simulador(wb):
                  "«Rodar a carteira» vende o que saiu e reparte tudo pelos escolhidos, sem comissões nem impostos)")
     ws["G10"].font = Font(italic=True, size=9, color="808080")
     ws["G9"] = "(ex.: IWDA.AS = ações mundiais em €; vazio = sem comparação)"
+    ws["E13"] = ("(opções 5, 6, 8: não se compra nenhum título com nota abaixo disto na data da compra — só com dados "
+                 "antigos a nota das ações vai no máximo a ≈4,2; opção 9: só entram os de nota global de hoje ≥ isto; "
+                 "vazio = sem mínimo)")
+    ws["E13"].font = Font(italic=True, size=9, color="808080")
     ws["G11"] = ("(só em «N primeiras ações + N primeiros ETFs»: cada reforço põe estes valores em cada parte, na "
                  "periodicidade escolhida; o investimento inicial reparte-se na mesma proporção)")
     ws["G11"].font = Font(italic=True, size=9, color="808080")
@@ -7118,6 +7129,392 @@ def _sim_infl_em(serie_i, datas):
     return out
 
 
+# ================================================================ fundamentos históricos (SEC, só empresas dos EUA)
+PASTA_SEC = os.path.join(PASTA, "_Painel_acoes_sec")             # cópias dos dados da SEC (renovadas a cada 30 dias)
+FICH_SEC_CONTACTO = os.path.join(PASTA, "_Painel_acoes_sec_contacto.txt")  # opcional: e-mail para o pedido à SEC
+SEC_FLUXO = {
+    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
+    "ni": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
+    "ocf": ["NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+    "bruto": ["GrossProfit"],
+    "receita": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+    "custo": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"],
+    "ebit": ["OperatingIncomeLoss"],
+    "juros": ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt"],
+    "imp": ["IncomeTaxExpenseBenefit"],
+    "antes": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+              "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+    "da": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet",
+           "DepreciationAndAmortization", "Depreciation"],
+    "acoes": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+}
+SEC_INSTANTE = {
+    "ativo": ["Assets"],
+    "cp": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    "caixa": ["CashAndCashEquivalentsAtCarryingValue",
+              "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+    "div_lp": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "div_cp": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings"],
+}
+
+
+def _sec_ua():
+    try:
+        with open(FICH_SEC_CONTACTO, encoding="utf-8") as f:
+            c = f.read().strip()
+        if c:
+            return f"PainelAcoes/1.0 ({c})"
+    except Exception:
+        pass
+    return "PainelAcoes/1.0 (uso pessoal; painel.acoes@example.com)"
+
+
+def _sec_get(url, destino, dias=30):
+    """JSON da SEC, com cópia local (válida «dias» dias). Sem net: usa a cópia, mesmo velha."""
+    import urllib.request
+    import gzip
+    os.makedirs(PASTA_SEC, exist_ok=True)
+    if os.path.exists(destino) and time.time() - os.path.getmtime(destino) < dias * 86400:
+        with open(destino, encoding="utf-8") as f:
+            return json.load(f)
+    try:
+        rq = urllib.request.Request(url, headers={"User-Agent": _sec_ua(), "Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(rq, timeout=40) as r:
+            dados = r.read()
+            if r.headers.get("Content-Encoding") == "gzip":
+                dados = gzip.decompress(dados)
+        js = json.loads(dados.decode("utf-8"))
+        with open(destino, "w", encoding="utf-8") as f:
+            json.dump(js, f)
+        time.sleep(0.15)                                 # a SEC pede no máximo 10 pedidos por segundo
+        return js
+    except Exception:
+        if os.path.exists(destino):
+            with open(destino, encoding="utf-8") as f:
+                return json.load(f)
+        raise
+
+
+def _sec_ciks():
+    js = _sec_get("https://www.sec.gov/files/company_tickers.json", os.path.join(PASTA_SEC, "tickers.json"))
+    return {txt(v.get("ticker")).upper().replace(".", "-"): int(v["cik_str"]) for v in js.values()}
+
+
+def _sec_anuais(js):
+    """Relatórios anuais (10-K) de uma empresa: [{fim, disponivel, eps, ni, ...}], cada um com os valores tal como
+    foram divulgados pela primeira vez (sem olhar para correções futuras)."""
+    from datetime import datetime as dt_
+    g = (js.get("facts") or {}).get("us-gaap") or {}
+    if not g:
+        return []
+    porfim = {}
+
+    def ler(chave, conceitos, fluxo):
+        for pri, c in enumerate(conceitos):                # o 1.º conceito manda; os seguintes só preenchem anos
+            u = (g.get(c) or {}).get("units") or {}
+            vals = u.get("USD") or u.get("USD/shares") or u.get("shares") or []
+            for x in vals:
+                if x.get("form") not in ("10-K", "10-K/A") or x.get("fp") != "FY" or "end" not in x:
+                    continue
+                if fluxo:
+                    if "start" not in x:
+                        continue
+                    dur = (dt_.strptime(x["end"], "%Y-%m-%d") - dt_.strptime(x["start"], "%Y-%m-%d")).days
+                    if not 330 <= dur <= 400:
+                        continue
+                elif "start" in x:
+                    continue
+                reg = porfim.setdefault(x["end"], {})
+                ant = reg.get(chave)
+                if ant is None or pri < ant[2] or (pri == ant[2] and x["filed"] < ant[1]):
+                    reg[chave] = (float(x["val"]), x["filed"], pri)
+    for k, cs in SEC_FLUXO.items():
+        ler(k, cs, True)
+    for k, cs in SEC_INSTANTE.items():
+        ler(k, cs, False)
+    out = []
+    for fim, reg in porfim.items():
+        if "eps" not in reg and "ni" not in reg:
+            continue
+        r = {k: v[0] for k, v in reg.items()}
+        base = reg.get("eps") or reg.get("ni")
+        r["fim"], r["disponivel"] = fim, base[1]
+        if "bruto" not in r and "receita" in r and "custo" in r:
+            r["bruto"] = r["receita"] - r["custo"]
+        r["divida"] = (r.get("div_lp") or 0.0) + (r.get("div_cp") or 0.0) if ("div_lp" in r or "div_cp" in r) else None
+        out.append(r)
+    out.sort(key=lambda r: r["disponivel"])
+    return out
+
+
+def _qual_saude(v, financeira=False):
+    """Qualidade (0-5) e saúde (0-5, com ALERTA) com as mesmas regras de fundamentos(), a partir de números."""
+    out = {}
+    ni, fcf, ebit, juros = v.get("ni"), v.get("fcf"), v.get("ebit"), v.get("juros")
+    bruto, ativo, cp = v.get("bruto"), v.get("ativo"), v.get("cp")
+    divida, caixa, imp, antes, da = v.get("divida"), v.get("caixa"), v.get("imp"), v.get("antes"), v.get("da")
+    ebitda = (ebit + da) if (ebit is not None and da is not None) else None
+    capital = (cp + (divida or 0) - (caixa or 0)) if cp is not None else None
+    liquida = (divida or 0) - (caixa or 0) if (divida is not None or caixa is not None) else None
+    taxa = min(max(imp / antes, 0.0), 0.35) if (imp is not None and antes and antes > 0) else 0.21
+    if ebit is not None and capital and capital > 0:
+        out["roic"] = ebit * (1 - taxa) / capital
+    if bruto is not None and ativo:
+        out["gpa"] = bruto / ativo
+    if fcf is not None and ni and ni > 0:
+        out["fcf_lucro"] = fcf / ni
+    q = [x for x in (_grad(out.get("roic"), *Q_ROIC), _grad(out.get("gpa"), *Q_GPA),
+                     _grad(out.get("fcf_lucro"), *Q_FCFL)) if x is not None]
+    if len(q) >= 2:
+        out["qual"] = round(5 * sum(q) / len(q), 1)
+    if financeira:
+        out["saude"] = "não se aplica (setor financeiro: banco, seguro ou financeira)"
+        return out
+    mau_d, bom_d = S_DIV
+    pts, alerta = [], []
+    dv = liquida / ebitda if (liquida is not None and ebitda and ebitda > 0) else None
+    cob = ebit / abs(juros) if (ebit is not None and juros and abs(juros) > 0) else None
+    if liquida is not None and liquida <= 0:
+        pts.append(1.0)
+    elif dv is not None:
+        pts.append(_grad(dv, mau_d, bom_d))
+        if dv > mau_d:
+            alerta.append(f"dívida líq. {dv:.1f}× EBITDA")
+    elif ebitda is not None and ebitda <= 0 and liquida and liquida > 0:
+        pts.append(0.0)
+        alerta.append("EBITDA negativo com dívida")
+    if cob is not None:
+        pts.append(_grad(cob, *S_JUROS))
+        if cob < S_JUROS[0]:
+            alerta.append(f"juros cobertos {cob:.1f}×")
+    elif ebit is not None and juros is not None and abs(juros) == 0:
+        pts.append(1.0)
+    if fcf is not None:
+        caixa_liq = liquida is not None and liquida <= 0
+        pts.append(1.0 if fcf >= 0 else 0.5 if caixa_liq else 0.0)
+        if fcf < 0 and not caixa_liq:
+            alerta.append("FCF negativo com dívida")
+    if pts:
+        out["saude_n"] = round(5 * sum(pts) / len(pts), 1)
+    out["saude"] = ("ALERTA: " + "; ".join(alerta)) if alerta else "OK"
+    return out
+
+
+class SecHist:
+    """Fundamentos de uma empresa dos EUA em qualquer data, só com os relatórios anuais já divulgados nessa data
+    (lucro por ação, PER, PER habitual de 3 anos, valor justo, FCF yield, qualidade e saúde)."""
+
+    def __init__(self, anuais, splits, preco_usd, financeira=False):
+        import pandas as pd
+        self.an = anuais
+        self.disp = [pd.Timestamp(r["disponivel"]) for r in anuais]
+        self.splits = splits if splits is not None else pd.Series(dtype=float)
+        self.p = preco_usd.dropna()
+        self.fin = financeira
+        self._pe_mes = None
+
+    def _fator(self, desde):
+        s = self.splits[self.splits.index > desde] if len(self.splits) else []
+        f = 1.0
+        for v in (s.values if len(s) else []):
+            if v and v > 0:
+                f *= float(v)
+        return f
+
+    def registo(self, dia):
+        import bisect
+        import pandas as pd
+        i = bisect.bisect_right(self.disp, pd.Timestamp(dia)) - 1
+        if i < 0:
+            return None
+        r = dict(self.an[i])
+        f = self._fator(pd.Timestamp(r["disponivel"]))   # ações desdobradas depois: em ações de hoje
+        if r.get("eps") is None and r.get("ni") is not None and r.get("acoes"):
+            r["eps"] = r["ni"] / r["acoes"]
+        if r.get("eps") is not None:
+            r["eps"] = r["eps"] / f
+        if r.get("acoes") is not None:
+            r["acoes"] = r["acoes"] * f
+        if r.get("ocf") is not None and r.get("capex") is not None:
+            r["fcf"] = r["ocf"] - abs(r["capex"])
+        return r
+
+    def _pe_mensal(self):
+        import pandas as pd
+        if self._pe_mes is None:
+            pm = self.p.resample("ME").last().dropna()
+            vals = {}
+            for d_, pr in pm.items():
+                r = self.registo(d_)
+                if r and r.get("eps") and r["eps"] > 0:
+                    vals[d_] = pr / r["eps"]
+            self._pe_mes = pd.Series(vals, dtype=float)
+        return self._pe_mes
+
+    def em(self, dia):
+        """Campos do painel nesta data (só com o que se sabia): justo_pct, justo, pe, pe_hab, fcf_yield, qual,
+        saude_n, saude."""
+        import pandas as pd
+        r = self.registo(dia)
+        if not r:
+            return {}
+        pr = self.p[self.p.index <= pd.Timestamp(dia)]
+        if not len(pr):
+            return {}
+        preco = float(pr.iloc[-1])
+        out = _qual_saude(r, self.fin)
+        eps = r.get("eps")
+        if eps and eps > 0:
+            out["pe"] = preco / eps
+            pem = self._pe_mensal()
+            pem = pem[(pem.index <= pd.Timestamp(dia)) & (pem.index > pd.Timestamp(dia) - pd.Timedelta(days=3 * 366))]
+            if len(pem) >= 12:
+                ph = float(pem.median())
+                out["pe_hab"] = ph
+                pm = min(ph, PESOS["pe_hab_max"]) if PESOS.get("cap_pe_sinal") else ph
+                out["justo"] = eps * pm
+                out["justo_pct"] = out["justo"] / preco - 1
+        if r.get("fcf") is not None and r.get("acoes"):
+            out["fcf_yield"] = r["fcf"] / (preco * r["acoes"])
+        out["_preco_usd"] = preco
+        return out
+
+
+def sec_preparar(linhas_acoes, ini, fim):
+    """{ticker Yahoo: SecHist} para as ações da lista cuja empresa está na SEC (relatórios 10-K, EUA)."""
+    import pandas as pd
+    from datetime import timedelta
+    try:
+        ciks = _sec_ciks()
+    except Exception as e:
+        print(f"   SEC indisponível ({e}): sem fundamentos históricos.")
+        return {}
+    pares = []
+    for d in linhas_acoes:
+        t = txt(d.get("ticker")).upper()
+        cod = txt(d.get("codigo")).upper().replace(".", "-").replace(" ", "")
+        for c in (cod, t if "." not in t else ""):
+            if c and c in ciks:
+                pares.append((t, c, ciks[c], txt(d.get("saude")).startswith("não se aplica")))
+                break
+    if not pares:
+        return {}
+    print(f"   SEC: relatórios anuais de {len(pares)} empresas dos EUA ...")
+    yf = _yf()
+    us = sorted({c for _, c, _, _ in pares})
+    try:
+        h = _por_ticker(yf.download(us, start=(ini - timedelta(days=4 * 366)).strftime("%Y-%m-%d"),
+                                    end=(fim + timedelta(days=1)).strftime("%Y-%m-%d"), interval="1d",
+                                    group_by="ticker", auto_adjust=False, progress=False, threads=True), us)
+    except Exception:
+        h = {}
+    out = {}
+    for t, c, cik, fin in pares:
+        try:
+            js = _sec_get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json",
+                          os.path.join(PASTA_SEC, f"CIK{cik:010d}.json"))
+            an = _sec_anuais(js)
+            df = h.get(c) if hasattr(h, "get") else None
+            if not an or df is None or "Close" not in df:
+                continue
+            p = df["Close"].dropna()
+            if getattr(p.index, "tz", None) is not None:
+                p.index = p.index.tz_localize(None)
+            p.index = p.index.normalize()
+            try:
+                sp = yf.Ticker(c).splits
+                if getattr(sp.index, "tz", None) is not None:
+                    sp.index = sp.index.tz_localize(None)
+            except Exception:
+                sp = None
+            out[t] = SecHist(an, sp, p, fin)
+        except Exception:
+            continue
+    print(f"   SEC: fundamentos históricos de {len(out)} empresas.")
+    return out
+
+
+_SIM_LOCAL = {}
+
+
+def _sim_notas_painel(P, tipos, dias, sec=None, niveis=None):
+    """Nota global do PAINEL (as mesmas regras: pontuar + nota_global) em cada dia de «dias», só com as cotações até
+    esse dia (sem analistas, valor justo, qualidade e saúde, que não há para datas passadas: contam como o sinal,
+    como no painel). P = cotações diárias na moeda da bolsa. -> DataFrame (dias × tickers)."""
+    import numpy as np
+    import pandas as pd
+    P = P.astype(float)
+    m100 = P.rolling(CURTA, min_periods=CURTA).mean()
+    m200 = P.rolling(200, min_periods=200).mean()
+    gap = m100 / m200 - 1
+    r = np.log(P).diff()
+    sig = (r.rolling(63, min_periods=40).std(ddof=0) + r.rolling(252, min_periods=40).std(ddof=0)) / 2 * np.sqrt(21)
+    stop = P.rolling(126, min_periods=1).max() * np.exp(-REDE_SIGMAS * sig)
+    ref6 = P.shift(126)
+    nval = P.notna().cumsum()
+    M = np.log(P.resample("ME").last())
+
+    def inclin(w, minimo, expand=False):
+        k = pd.DataFrame({c: np.arange(len(M), dtype=float) for c in M.columns}, index=M.index).where(M.notna())
+        rol = (lambda x: x.expanding(min_periods=minimo)) if expand else (lambda x: x.rolling(w, min_periods=minimo))
+        mk, my, mky, mkk = rol(k).mean(), rol(M).mean(), rol(k * M).mean(), rol(k * k).mean()
+        return np.exp((mky - mk * my) / (mkk - mk * mk) * 12) - 1
+    s_all, s5, s10 = inclin(None, 36, True), inclin(61, 61), inclin(121, 121)
+    dias = [d for d in dias if d in P.index]
+    out = pd.DataFrame(index=pd.DatetimeIndex(sorted(set(dias))), columns=P.columns, dtype=float)
+    etfs = [t for t in P.columns if tipos.get(t) == "ETF"]
+    for dia in out.index:
+        fm = M.index[M.index.searchsorted(dia, side="right") - 1] if M.index.searchsorted(dia, side="right") else None
+        mes_fechado = fm if fm is not None and fm < dia else (M.index[M.index.get_loc(fm) - 1]
+                                                               if fm is not None and M.index.get_loc(fm) > 0 else None)
+        m6 = {t: P.at[dia, t] / ref6.at[dia, t] - 1 for t in etfs
+              if pd.notna(ref6.at[dia, t]) and ref6.at[dia, t] and pd.notna(P.at[dia, t])}
+        ordem = sorted(m6, key=lambda t: -m6[t])
+        pos6 = {t: (i / (len(ordem) - 1) if len(ordem) > 1 else 0.0) for i, t in enumerate(ordem)}
+        for t in P.columns:
+            pr = P.at[dia, t]
+            if pd.isna(pr) or nval.at[dia, t] < 200 or pd.isna(m200.at[dia, t]):
+                continue
+            d = {"tipo": tipos.get(t) or "Ação", "mm100c": float(m100.at[dia, t]), "mm200c": float(m200.at[dia, t])}
+            pos5 = P.index.get_loc(dia) - 5
+            if pos5 >= 0 and pd.notna(gap.iloc[pos5][t]):
+                d["gap5"] = float(gap.iloc[pos5][t])
+            if pd.notna(stop.at[dia, t]):
+                d["venda_min"] = d["stop"] = float(stop.at[dia, t])
+            if pd.notna(ref6.at[dia, t]):
+                d["ref6m"] = float(ref6.at[dia, t])
+            if mes_fechado is not None and pd.notna(s_all.at[mes_fechado, t]):
+                sa = float(s_all.at[mes_fechado, t])
+                v5 = float(s5.at[mes_fechado, t]) if pd.notna(s5.at[mes_fechado, t]) else None
+                v10 = float(s10.at[mes_fechado, t]) if pd.notna(s10.at[mes_fechado, t]) else None
+                d["lp"] = min(sa, v5) if v5 is not None else sa
+                d["lp10"] = v10 if v10 is not None else sa
+                d["lp5"] = v5 if v5 is not None else sa
+            if t in pos6:
+                d["_pos6"], d["_n6"] = pos6[t], len(ordem)
+            if sec and t in sec:                        # EUA: fundamentos dos relatórios já divulgados nesse dia
+                try:
+                    f_ = sec[t].em(dia)
+                    pu = f_.pop("_preco_usd", None)
+                    d.update(f_)
+                    if pu:
+                        d["preco"] = pu
+                except Exception:
+                    pass
+            pontuar(d, float(pr))
+            try:
+                nt = nota_global(d)
+            except Exception:
+                nt = None
+            if nt is not None:
+                out.at[dia, t] = nt
+            if niveis is not None and isinstance(d.get("nivel_preco"), (int, float)):
+                niveis.at[dia, t] = d["nivel_preco"]
+    return out
+
+
 def _sim_cotacoes_eur(tickers, moedas, ini, fim):
     """Cotações diárias ajustadas (dividendos reinvestidos) em euros: DataFrame (dias × tickers)."""
     import pandas as pd
@@ -7175,6 +7572,7 @@ def _sim_cotacoes_eur(tickers, moedas, ini, fim):
             sem_cambio.append(t)
             tab = tab.drop(columns=[t])
     tab = tab.ffill()
+    _SIM_LOCAL["tab"] = pd.DataFrame(precos).sort_index().ffill()       # na moeda de cada bolsa (para a nota do painel)
     return tab.loc[(tab.index >= pd.Timestamp(ini) - pd.Timedelta(days=10)) & (tab.index <= pd.Timestamp(fim))], sem_cambio
 
 
@@ -7286,7 +7684,7 @@ def _sim_notas_precos(tab):
     return nota.where(n_tend.notna() & sinal.notna() & n_mom.notna())
 
 
-def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar):
+def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, ordem=None):
     """Em cada compra escolhe pela nota de preços desse dia (N primeiros ou nota ≥); só compras ou rodar a carteira
     (vende o que saiu e reparte tudo em partes iguais pelos escolhidos)."""
     import pandas as pd
@@ -7306,6 +7704,11 @@ def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar):
             investido += entra
             nt = notas.loc[dia].dropna()
             nt = nt[[t for t in nt.index if pd.notna(px.get(t)) and px.get(t) > 0]]
+            if minimo is not None:
+                nt = nt[nt >= minimo]
+            if ordem is not None:                       # ordena por outra coisa (nível de preço) entre os que passam
+                ov = ordem.loc[dia].reindex(nt.index).dropna()
+                nt = ov
             esc = list(nt.sort_values(ascending=False).index[:int(limite)]) if modo == "n" else \
                 list(nt[nt >= limite].index)
             for t in esc:
@@ -7339,6 +7742,12 @@ def simular():
     from datetime import datetime as dt_
     import pandas as pd
     ex = Excel(FICHEIRO)
+    try:
+        carregar_pesos(ex)                                # as percentagens da folha Ponderações (como estão agora)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     p = ler_simulador(ex)
     _sim_gravar(param=p)
     ini = _sim_data(p["d_ini"])
@@ -7355,9 +7764,17 @@ def simular():
     nomes = {txt(d.get("ticker")).upper(): txt(d.get("nome")) for d in acoes + etfs if txt(d.get("ticker"))}
     escolha = p["comprar"]
     cod = _sim_cod(escolha)
-    dinamico = cod in (5, 6, 8)
+    dinamico = cod in (5, 6, 8, 10)
     duplo = cod in (7, 8)
     grupos = None
+    nmin = p.get("nota_min") if (dinamico or cod == 9) else None   # nota mínima: opções 5, 6, 8, 9 e 10
+    nota_de = {txt(d.get("ticker")).upper(): _sim_num(d.get("nota")) for d in acoes + etfs if txt(d.get("ticker"))}
+    passa = lambda d: nmin is None or (_sim_num(d.get("nota")) is not None and _sim_num(d["nota"]) >= nmin)
+    if not dinamico:                                      # nota mínima: só entram os que a cumprem (nota de hoje)
+        acoes_c, etfs_c = [d for d in acoes if passa(d)], [d for d in etfs if passa(d)]
+    else:
+        acoes_c, etfs_c = acoes, etfs
+    univ_c = {"Só ações": acoes_c, "Só ETFs": etfs_c}.get(p["entre"], acoes_c + etfs_c)
     if duplo:                                             # duas partes: ações e ETFs, cada uma com o seu valor
         for k in ("n_a", "v_a", "n_e", "v_e"):              # vazios (folha de uma versão anterior): os padrões
             if p.get(k) is None:
@@ -7369,22 +7786,30 @@ def simular():
         else:
             top = lambda ls, n: [txt(d["ticker"]).upper() for d in sorted(
                 [d for d in ls if isinstance(_sim_num(d.get("nota")), float)], key=lambda d: -_sim_num(d["nota"]))[:n]]
-            ga, ge = top(acoes, n_a), top(etfs, n_e)
+            ga, ge = top(acoes_c, n_a), top(etfs_c, n_e)
         grupos = [(ga, n_a, float(p.get("v_a") or 0)), (ge, n_e, float(p.get("v_e") or 0))]
         grupos = [g_ for g_ in grupos if g_[0] and g_[1] > 0]
         pesos = {t: 1.0 for g_ in grupos for t in g_[0]}
+    elif cod == 10:
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in acoes if txt(d.get("ticker"))}
     elif dinamico:                                          # todos os títulos do universo; escolhe-se em cada data
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in univ if txt(d.get("ticker"))}
+    elif cod == 9:                                        # melhor preço (nível de preço) entre os de nota ≥ mínimo
+        n = int(p["n"] or 10)
+        cand = [d for d in univ_c if isinstance(_sim_num(d.get("nivel_preco")), float)]
+        sel = sorted(cand, key=lambda d: (-_sim_num(d["nivel_preco"]), -(_sim_num(d.get("justo_pct")) or -9),
+                                          -(_sim_num(d.get("nota")) or 0)))[:n]
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
     elif cod == 1:
-        sel = [d for d in univ if e_detido(d.get("det")) or (_sim_num(d.get("qtd")) or 0) > 0]
+        sel = [d for d in univ_c if e_detido(d.get("det")) or (_sim_num(d.get("qtd")) or 0) > 0]
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
     elif cod == 2:
         n = int(p["n"] or 10)
-        sel = sorted([d for d in univ if isinstance(_sim_num(d.get("nota")), (int, float))], key=lambda d: -_sim_num(d["nota"]))[:n]
+        sel = sorted([d for d in univ_c if isinstance(_sim_num(d.get("nota")), (int, float))], key=lambda d: -_sim_num(d["nota"]))[:n]
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
     elif cod == 3:
         m = p["n"] if p["n"] is not None else 4
-        sel = [d for d in univ if isinstance(_sim_num(d.get("nota")), (int, float)) and _sim_num(d["nota"]) >= m]
+        sel = [d for d in univ_c if isinstance(_sim_num(d.get("nota")), (int, float)) and _sim_num(d["nota"]) >= m]
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
     else:
         pesos = {}
@@ -7392,9 +7817,10 @@ def simular():
             pesos[t] = pesos.get(t, 0) + (w if isinstance(w, (int, float)) and w > 0 else 0)
         if pesos and not any(pesos.values()):
             pesos = {t: 1.0 for t in pesos}
-        pesos = {t: w for t, w in pesos.items() if w > 0}
+        pesos = {t: w for t, w in pesos.items() if w > 0 and
+                 (nmin is None or nota_de.get(t) is None or nota_de[t] >= nmin)}
     if not pesos:
-        print(f"Simulador: nenhum título para «{escolha}». Verifica a escolha (e o x/quantidades, a nota ou a carteira).")
+        print(f"Simulador: nenhum título para «{escolha}». Verifica a escolha (e o x/quantidades, a nota, a nota mínima ou a carteira).")
         sys.exit(1)
     bench = txt(p.get("bench")).upper()
     falta_moeda = [t for t in list(pesos) + ([bench] if bench else []) if t not in moedas]
@@ -7412,10 +7838,9 @@ def simular():
     print(f"Simulador: {len(pesos)} título(s) · {escolha} · de {ini:%d/%m/%Y} a {fim:%d/%m/%Y} ...")
     ini_dados = ini.replace(year=ini.year - 11) if dinamico else ini   # nota de preços: precisa de 10 anos antes
     tab_h, sem_cambio = _sim_cotacoes_eur(list(pesos) + ([bench] if bench else []), moedas, ini_dados, fim)
-    notas_p = None
-    if dinamico:
-        print("   a calcular a nota de preços de cada título em cada dia ...")
-        notas_p = _sim_notas_precos(tab_h[[t for t in pesos if t in tab_h.columns]])
+    notas_p = niveis_p = None
+    sec = {}
+    tipos = {txt(d.get("ticker")).upper(): ("ETF" if d in etfs else "Ação") for d in acoes + etfs if txt(d.get("ticker"))}
     tab = tab_h.loc[tab_h.index >= pd.Timestamp(ini)]
     if not len(tab):
         print("Simulador: sem cotações nesse período.")
@@ -7442,6 +7867,20 @@ def simular():
     sem_dados = [t for t in pesos if t not in tab.columns]
     pesos_ok = {t: w for t, w in pesos.items() if t in tab.columns}
     vezes, vendido = {}, {}
+    if dinamico:                                          # a nota do painel só nos dias de compra
+        dias_c = sorted({tab.index[tab.index.searchsorted(pd.Timestamp(d))] for d, _ in compras
+                         if tab.index.searchsorted(pd.Timestamp(d)) < len(tab.index)})
+        loc = _SIM_LOCAL.get("tab")
+        cols = [t for t in pesos if t in tab.columns and loc is not None and t in loc.columns]
+        sec = {}
+        try:                                              # EUA: qualidade, saúde e preço pelos relatórios da SEC
+            sec = sec_preparar([d for d in acoes if txt(d.get("ticker")).upper() in cols], ini, fim)
+        except Exception as e:
+            print(f"   SEC: {e}")
+        print(f"   a calcular a nota do painel de {len(cols)} títulos em {len(dias_c)} datas (só com os dados de cada data) ...")
+        niveis_p = pd.DataFrame(index=pd.DatetimeIndex(dias_c), columns=cols, dtype=float)
+        notas_p = _sim_notas_painel(loc[cols], tipos, dias_c, sec, niveis_p).reindex(tab.index)
+        niveis_p = niveis_p.reindex(tab.index)
     if duplo:                                             # corre cada parte e soma
         unid, inv_t, fluxos = {}, {}, []
         sv = si = None
@@ -7450,8 +7889,8 @@ def simular():
             if not tk or not cg:
                 continue
             if dinamico:
-                u_, i_, sv_, si_, f_, vz, vd_ = _sim_correr_dinamico(tab[tk], notas_p.loc[tab.index, tk], cg, "n", n,
-                                                                     p.get("rodar") == SIM_RODAR[1])
+                u_, i_, sv_, si_, f_, vz, vd_ = _sim_correr_dinamico(tab[tk], notas_p.reindex(columns=tk), cg, "n", n,
+                                                                     p.get("rodar") == SIM_RODAR[1], nmin)
                 vezes.update(vz)
                 vendido.update(vd_)
             else:
@@ -7468,10 +7907,11 @@ def simular():
         pesos_ok = {t: 1.0 for t in inv_t}
         unid = {t: unid.get(t, 0.0) for t in pesos_ok}
     elif dinamico:
-        modo = "n" if cod == 5 else "nota"
+        modo = "n" if cod in (5, 10) else "nota"
         limite = (p["n"] or 10) if modo == "n" else (p["n"] if p["n"] is not None else 3.5)
         unid, inv_t, sv, si, fluxos, vezes, vendido = _sim_correr_dinamico(
-            tab[list(pesos_ok)], notas_p.loc[tab.index], compras, modo, limite, p.get("rodar") == SIM_RODAR[1])
+            tab[list(pesos_ok)], notas_p.reindex(columns=list(pesos_ok)), compras, modo, limite, p.get("rodar") == SIM_RODAR[1], nmin,
+            niveis_p.reindex(columns=list(pesos_ok)) if cod == 10 else None)
         pesos_ok = {t: 1.0 for t in inv_t}
         unid = {t: unid.get(t, 0.0) for t in pesos_ok}
     else:
@@ -7495,13 +7935,18 @@ def simular():
              tab[t].first_valid_index() > tab.index[0] + pd.Timedelta(days=10)]
     if tarde:
         notas.append("só com cotações depois do início (entram quando começam): " + ", ".join(tarde[:12]))
+    if nmin is not None:
+        notas.append(f"só se compram títulos com nota ≥ {nmin:g} na data da compra" if dinamico else
+                     f"só entram títulos com nota global de hoje ≥ {nmin:g}")
     if ini_ef > ini + pd.Timedelta(days=7):
         notas.append(f"sem cotações antes de {ini_ef:%d/%m/%Y}: a simulação começa aí")
     if dinamico:
-        notas.append(f"reclassificado em cada data pela nota de preços (tendência 40%, sinal das médias 35%, "
-                     f"momento 25%); {p.get('rodar')}; {len(vezes)} títulos diferentes escolhidos ao longo do tempo; "
-                     "a lista de títulos é a de hoje (as que desapareceram não entram)")
-    elif cod in (2, 3, 7):
+        notas.append(f"reclassificado em cada data pela nota do painel (as mesmas regras da nota global) só com os "
+                     f"dados de cada data; ações dos EUA com qualidade, saúde e preço pelos relatórios anuais da SEC já "
+                     f"divulgados nessa data ({len(sec)} empresas); nas outras, sem qualidade e saúde (contam como o "
+                     f"sinal); analistas nunca (não há histórico); {p.get('rodar')}; {len(vezes)} títulos diferentes "
+                     "escolhidos ao longo do tempo; a lista de títulos é a de hoje (as que desapareceram não entram)")
+    elif cod in (2, 3, 7, 9):
         notas.append("escolha feita pela nota de hoje: o passado fica favorecido")
     infl_s, infl_fonte = None, None
     try:
@@ -7570,20 +8015,48 @@ def simular():
 FOLHA_CMP = "Comparar notas"
 
 
+CMP_TIT = ["Top 10 pela NOTA DO PAINEL SÓ COM DADOS ANTIGOS — as regras da nota global sem o que não há para datas "
+           "passadas (analistas, valor justo, qualidade, saúde). Ao lado: a nota global de hoje e o lugar nela",
+           "Top 10 pela NOTA DE PREÇOS — a das opções 5, 6 e 8 do Simulador (tendência 40%, médias 35%, momento 25%). "
+           "Ao lado: a nota global de hoje e o lugar nela"]
+CMP_COLS = (2, 8)                              # B, H
+CMP_LINS = (6, 23)                             # ações, ETFs
+
+
 def folha_comparar(wb):
-    """Folha «Comparar notas»: a nota global (todos os critérios) vs a nota de preços (a que o simulador usa
-    em cada data), hoje. Preenchida pelo botão ⚖ COMPARAR."""
+    """Folha «Comparar notas»: a nota global (todos os critérios) vs as notas que se conseguem calcular para datas
+    antigas (só cotações). Preenchida pelo botão ⚖ COMPARAR."""
     ws = wb.create_sheet(FOLHA_CMP)
-    ws["A1"] = "Nota global (todos os critérios) vs nota de preços (só cotações) — hoje"
+    ws["A1"] = "As notas de datas antigas são parecidas com a nota global de hoje? (para ver se o Simulador é verosímil)"
     ws["A1"].font = Font(size=14, bold=True)
-    ws["B2"] = ("Para ver se a nota de preços (a que o Simulador usa nas opções 5, 6 e 8, por não haver dados antigos de "
-                "analistas, valor justo, qualidade e saúde) escolhe parecido com a nota global. Carrega em ⚖ COMPARAR.")
+    ws["B2"] = ("Hoje há todos os dados; numa data antiga só há cotações. Os dois quadros classificam os títulos de hoje "
+                "só com o que se saberia no passado e mostram, ao lado, a nota global (com tudo) e o lugar que cada um "
+                "tem nela. Quanto mais títulos em comum com o top 10 da nota global e mais perto de 1 a correlação, "
+                "mais verosímil é simular o passado com essa nota. Em baixo: as percentagens usadas em cada nota.")
+    ws["B2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["B2"].font = Font(italic=True, size=9, color="595959")
-    botao(ws, "H3", "⚖ COMPARAR", "painelacoes://comparar", "7030A0", "4B0082", 13)
-    ws.merge_cells("H3:J4")
-    for col, w in zip("ABCDEFGHIJKLMNOPQ", (2, 5, 30, 9, 9, 9, 3, 5, 30, 9, 9, 9, 3, 3, 3, 3, 3)):
+    ws.merge_cells("B2:L2")
+    ws.row_dimensions[2].height = 40
+    botao(ws, "N3", "⚖ COMPARAR", "painelacoes://comparar", "7030A0", "4B0082", 13)
+    ws.merge_cells("N3:P4")
+    for col, w in zip("ABCDEFGHIJKLMNOP", (2, 5, 30, 9, 9, 9, 2, 5, 30, 9, 9, 9, 2, 10, 10, 10)):
         ws.column_dimensions[col].width = w
-    g = _sim_guardados().get("cmp")
+    pc = lambda k: f"{PESOS.get(k, 0) * 100:.0f}%"
+    linhas_p = [
+        "Percentagens usadas em cada nota (ações):",
+        f"• Nota global (com tudo): sinal {pc('pont')} + qualidade {pc('qual')} + saúde {pc('saude')} + tendência "
+        f"{pc('tend')} (tendência = {pc('t10')} 10 anos + {pc('t5')} 5 anos). O sinal (1 a 5) usa as médias 100/200 E os "
+        "analistas e o valor justo; sem analistas fica no máximo 4.",
+        f"• Nota do painel só com dados antigos: sem qualidade nem saúde, que contam como o sinal (é a regra do painel "
+        f"para o que falta) -> na prática sinal {PESOS.get('pont', 0) * 100 + PESOS.get('qual', 0) * 100 + PESOS.get('saude', 0) * 100:.0f}% "
+        f"+ tendência {pc('tend')}, e o sinal só pelas médias (máximo 4).",
+        "• Nota de preços: tendência de longo prazo 40% + sinal das médias 35% + momento 6 meses 25%.",
+        f"ETFs: nota global = sinal {pc('etf_pont')} + nota das ações que têm {pc('etf_acoes')} + tendência "
+        f"{pc('etf_tend')}; com dados antigos a parte das ações conta como o sinal."]
+    for i, t in enumerate(linhas_p):
+        c = ws.cell(40 + i, 2, t)
+        c.font = Font(bold=(i == 0), size=10 if i == 0 else 9)
+    g = _sim_guardados().get("cmp3")
     if g:
         for cel, v in g:
             ws[cel] = v
@@ -7592,76 +8065,152 @@ def folha_comparar(wb):
 
 def _cmp_formatar(ws):
     az = PatternFill("solid", fgColor="1F3B57")
-    for r0 in (6, 22):
-        for c0, tit in ((2, "Top 10 pela NOTA GLOBAL"), (8, "Top 10 pela NOTA DE PREÇOS")):
-            ws.cell(r0 + 1, c0).font = Font(bold=True)
-            for j, h in enumerate(("Pos.", "Título", "Nota global", "Nota preços", "Pos. na outra"), c0):
+    nomes = ("Nota dados antigos", "Nota preços")
+    for r0 in CMP_LINS:
+        ws.cell(r0, 2).font = Font(bold=True, size=12)
+        for k, c0 in enumerate(CMP_COLS):
+            t = ws.cell(r0 + 1, c0, CMP_TIT[k])
+            t.font = Font(bold=True, size=9, color="1F3B57")
+            t.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.merge_cells(start_row=r0 + 1, start_column=c0, end_row=r0 + 1, end_column=c0 + 4)
+            outra = nomes[k]
+            hs = ("Pos.", "Título", outra, "Nota global", "Pos. na global")
+            for j, h in enumerate(hs, c0):
                 c = ws.cell(r0 + 2, j, h)
-                c.font, c.fill = Font(bold=True, color="FFFFFF"), az
-                c.alignment = Alignment(horizontal="center", wrap_text=True)
+                c.font, c.fill = Font(bold=True, color="FFFFFF", size=9), az
+                c.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
             for i in range(10):
                 for j in (c0 + 2, c0 + 3):
                     ws.cell(r0 + 3 + i, j).number_format = "0.0"
-        ws.cell(r0, 2).font = Font(bold=True, size=12)
-        ws.cell(r0 + 14, 3).font = Font(italic=True)
+            ws.cell(r0 + 14, c0).font = Font(italic=True, size=9)
+        ws.row_dimensions[r0 + 1].height = 50
+        ws.row_dimensions[r0 + 2].height = 30
+
+
+def _nota_dados_antigos(c, tipo, pos6=None, n6=None, extra=None):
+    """Nota global do painel calculada só com as cotações até ao último dia de c (sem analistas, valor justo,
+    qualidade e saúde: o que falta conta como o sinal, como no painel)."""
+    import numpy as np
+    c = c.dropna()
+    c = c[c > 0]
+    if len(c) < 200:
+        return None
+    sig = volatilidade(c.to_numpy(dtype=float))
+    s_ = sinal_estrategia(c.to_numpy(dtype=float), sig)
+    if not s_:
+        return None
+    d = {"tipo": tipo, "mm100c": s_["mmc"], "mm200c": s_["mm200"], "gap5": s_["gap5"], "venda_min": s_["stop"],
+         "stop": s_["stop"]}
+    if len(c) > 126:
+        d["ref6m"] = float(c.iloc[-127])
+    m = c.resample("ME").last().dropna()
+    if len(m) >= 36:
+        reta = lambda cc: float(np.exp(np.polyfit(np.arange(len(cc)) / 12.0, np.log(cc.to_numpy(dtype=float)), 1)[0]) - 1)
+        s_all = reta(m)
+        s5 = reta(m.iloc[-61:]) if len(m) >= 61 else None
+        s10 = reta(m.iloc[-121:]) if len(m) >= 121 else None
+        d["lp"] = min(s_all, s5) if s5 is not None else s_all
+        d["lp10"] = s10 if s10 is not None else s_all
+        d["lp5"] = s5 if s5 is not None else s_all
+    if pos6 is not None:
+        d["_pos6"], d["_n6"] = pos6, n6
+    if extra:
+        ex_ = dict(extra)
+        pu = ex_.pop("_preco_usd", None)
+        d.update(ex_)
+        if pu:
+            d["preco"] = pu
+    pontuar(d, float(c.iloc[-1]))
+    try:
+        return nota_global(d)
+    except Exception:
+        return None
 
 
 def comparar_notas():
-    """⚖ COMPARAR: nota de preços de hoje (com as cotações de 11 anos) vs nota global da folha."""
-    from datetime import datetime as dt_, timedelta
+    """⚖ COMPARAR: nota global da folha vs nota de preços e vs nota do painel só com dados antigos (hoje)."""
+    from datetime import datetime as dt_
     import pandas as pd
     ex = Excel(FICHEIRO)
     ultima = get_column_letter(len(COLS))
     r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
     grupos = [("AÇÕES", list(linhas_por_cabecalho(r[0], 1))), ("ETFs", list(linhas_por_cabecalho(r[1], 2)))]
-    moedas = {txt(d.get("ticker")).upper(): txt(d.get("moeda")) for _, ls in grupos for d in ls if txt(d.get("ticker"))}
+    todos = sorted({txt(d.get("ticker")).upper() for _, ls in grupos for d in ls if txt(d.get("ticker"))})
     hoje = dt_.now()
-    todos = sorted(moedas)
+    try:
+        carregar_pesos(ex)                                # as percentagens da folha Ponderações (como estão agora)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     print(f"Comparar notas: {len(todos)} títulos; a descarregar 11 anos de cotações ...")
-    tab, _ = _sim_cotacoes_eur(todos, moedas, hoje.replace(year=hoje.year - 11), hoje)
+    tab, _ = _sim_cotacoes_eur(todos, {t: "EUR" for t in todos}, hoje.replace(year=hoje.year - 11), hoje)
     notas_p = _sim_notas_precos(tab).ffill().iloc[-1]
+    sec = {}
+    try:
+        sec = sec_preparar(grupos[0][1], hoje.replace(year=hoje.year - 4), hoje)
+    except Exception as e:
+        print(f"   SEC: {e}")
+    m6 = {}
+    for t in tab.columns:                           # ETFs: lugar pela subida em 6 meses (como no painel)
+        cc = tab[t].dropna()
+        if len(cc) > 126:
+            m6[t] = float(cc.iloc[-1] / cc.iloc[-127] - 1)
     cel = []
-    for (nome, ls), r0 in zip(grupos, (6, 22)):
+    for (nome, ls), r0 in zip(grupos, CMP_LINS):
+        etf = nome == "ETFs"
+        if etf:
+            ord6 = sorted([txt(d.get("ticker")).upper() for d in ls if txt(d.get("ticker")).upper() in m6],
+                          key=lambda t: -m6[t])
+            pos = {t: (i / (len(ord6) - 1) if len(ord6) > 1 else 0.0) for i, t in enumerate(ord6)}
         lin = []
         for d in ls:
             t = txt(d.get("ticker")).upper()
             ng = _sim_num(d.get("nota"))
+            if not t or ng is None:
+                continue
             npz = notas_p.get(t)
             npz = float(npz) if npz is not None and pd.notna(npz) else None
-            if t and ng is not None:
-                lin.append((txt(d.get("nome")) or t, ng, npz))
+            nh = None
+            if t in tab.columns:
+                ext = None
+                if not etf and t in sec:
+                    try:
+                        ext = sec[t].em(tab.index[-1])
+                    except Exception:
+                        ext = None
+                nh = _nota_dados_antigos(tab[t], "ETF" if etf else "Ação", pos.get(t) if etf else None,
+                                         len(ord6) if etf else None, ext)
+            lin.append((txt(d.get("nome")) or t, ng, npz, nh))
         if not lin:
             continue
         por_g = sorted(lin, key=lambda x: -x[1])
-        por_p = sorted([x for x in lin if x[2] is not None], key=lambda x: -x[2])
         pos_g = {x[0]: i + 1 for i, x in enumerate(por_g)}
-        pos_p = {x[0]: i + 1 for i, x in enumerate(por_p)}
-        for c0, lista, outra in ((2, por_g, pos_p), (8, por_p, pos_g)):
-            cel.append((f"{get_column_letter(c0)}{r0 + 1}",
-                        "Top 10 pela NOTA GLOBAL" if c0 == 2 else "Top 10 pela NOTA DE PREÇOS"))
+        resumo = []
+        for k, (c0, idx_n, rot) in enumerate(zip(CMP_COLS, (3, 2), ("painel com dados antigos", "nota de preços"))):
+            lista = sorted([x for x in lin if x[idx_n] is not None], key=lambda x: -x[idx_n])
             for i in range(10):
                 x = lista[i] if i < len(lista) else None
-                vals = [i + 1, x[0], x[1], x[2], outra.get(x[0])] if x else [None] * 5
+                vals = [i + 1, x[0], x[idx_n], x[1], pos_g.get(x[0])] if x else [None] * 5
                 for j, v in enumerate(vals):
                     cel.append((f"{get_column_letter(c0 + j)}{r0 + 3 + i}", v))
-        comuns = len({x[0] for x in por_g[:10]} & {x[0] for x in por_p[:10]})
-        ambos = [x for x in lin if x[2] is not None]
-        rho = None
-        if len(ambos) > 5:
-            rho = pd.Series([x[1] for x in ambos]).rank().corr(pd.Series([x[2] for x in ambos]).rank())
-        cel.append((f"B{r0}", f"{nome}: {comuns} dos 10 primeiros são os mesmos nas duas notas"))
-        cel.append((f"C{r0 + 14}", (f"Correlação das ordens (Spearman, {len(ambos)} títulos): {rho:+.2f}  "
-                                    "(1 = mesma ordem; 0 = sem relação; negativo = ordem inversa)") if rho is not None
-                    else "Sem títulos suficientes para a correlação."))
-        print(f"   {nome}: {comuns}/10 em comum; correlação {rho:+.2f}" if rho is not None else f"   {nome}: {comuns}/10")
-    cel.append(("B4", f"Calculado em {hoje:%d/%m/%Y %H:%M}"))
-    limpar = [(f"{get_column_letter(c)}{r}", None) for r0 in (6, 22) for r in range(r0, r0 + 15)
-              for c in range(2, 13) if r != r0 + 2]       # a linha dos cabeçalhos fica
-    vals = dict(limpar)
-    vals.update(dict(cel))
-    ops = [{"op": "escrever", "folha": FOLHA_CMP, "rng": k, "valores": [[v]]} for k, v in vals.items()]
-    ex.ops(ops, guardar=True)
-    _sim_gravar(cmp=[(k, v) for k, v in cel])
+            comuns = len({x[0] for x in por_g[:10]} & {x[0] for x in lista[:10]})
+            rho = (pd.Series([x[1] for x in lista]).rank().corr(pd.Series([x[idx_n] for x in lista]).rank())
+                   if len(lista) > 5 else None)
+            cel.append((f"{get_column_letter(c0)}{r0 + 14}",
+                        f"{comuns} dos 10 primeiros em comum com o top 10 da nota global; correlação das ordens "
+                        f"{rho:+.2f} ({len(lista)} títulos; 1 = mesma ordem, 0 = sem relação)" if rho is not None
+                        else f"{comuns} dos 10 primeiros em comum com o top 10 da nota global"))
+            resumo.append(f"{rot} {comuns}/10" + (f" (correlação {rho:+.2f})" if rho is not None else ""))
+            print(f"   {nome} · {resumo[-1]}")
+        cel.append((f"B{r0}", f"{nome} — em comum com a nota global: " + " · ".join(resumo)))
+    cel.append(("N6", f"Calculado em {hoje:%d/%m/%Y %H:%M}"))
+    limpar = {f"{get_column_letter(c)}{r}": None for r0 in CMP_LINS for r in [r0] + list(range(r0 + 3, r0 + 15))
+              for c in range(2, 13)}
+    limpar.update(dict(cel))
+    ex.ops([{"op": "escrever", "folha": FOLHA_CMP, "rng": k, "valores": [[v]]} for k, v in limpar.items()],
+           guardar=True)
+    _sim_gravar(cmp3=cel)
 
 
 FICH_TEMPOS = os.path.join(PASTA, "_Painel_acoes_tempos.json")   # durações das últimas execuções (estimativa)
