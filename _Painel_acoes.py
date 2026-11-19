@@ -577,7 +577,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V099", "19/11/2026"
+VERSAO, DATA_VERSAO = "V100", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -5235,7 +5235,9 @@ function mostrar(){
 document.querySelectorAll('.tabs .tab').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tabs .tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
 document.getElementById('q').addEventListener('input',mostrar);
-document.getElementById('o').addEventListener('change',()=>{campoMin();mostrar();});
+document.getElementById('o').addEventListener('change',()=>{try{localStorage.setItem('ordem_app',document.getElementById('o').value);}catch(e){}campoMin();mostrar();});
+try{const o0=localStorage.getItem('ordem_app'),sel=document.getElementById('o');
+  if(o0&&[...sel.options].some(x=>x.value===o0)){sel.value=o0;campoMin();}}catch(e){}
 function aplicarMin(){const nm=document.getElementById('nm');try{localStorage.setItem('nm_v_'+document.getElementById('o').value,nm.value);}catch(e){}mostrar();}
 document.getElementById('nm').addEventListener('input',aplicarMin);
 document.getElementById('nm').addEventListener('change',aplicarMin);
