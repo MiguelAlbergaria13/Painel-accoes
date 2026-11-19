@@ -569,7 +569,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V093", "19/11/2026"
+VERSAO, DATA_VERSAO = "V094", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -7750,7 +7750,7 @@ def _sim_notas_precos(tab):
     return nota.where(n_tend.notna() & sinal.notna() & n_mom.notna())
 
 
-def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, ordem=None):
+def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, ordem=None, verificar=None):
     """Em cada compra escolhe pela nota de preços desse dia (N primeiros ou nota ≥); só compras ou rodar a carteira
     (vende o que saiu e reparte tudo em partes iguais pelos escolhidos)."""
     import pandas as pd
@@ -7762,12 +7762,16 @@ def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, 
             planos[idx[pos]] = planos.get(idx[pos], 0.0) + v
     unid, inv_t, vezes, vendido = {}, {}, {}, {}
     caixa, fluxos, investido, val, inv = 0.0, [], 0.0, [], []
+    verificar = set(verificar or [])
+    sem_escolha = 0
     for dia in idx:
         px = tab.loc[dia]
-        if dia in planos:
-            entra = planos[dia]
-            fluxos.append((dia.to_pydatetime(), -entra))
-            investido += entra
+        # dia de compra; ou, com dinheiro à espera, um dia de verificação (1.º dia de bolsa de cada mês)
+        if dia in planos or (caixa > 0.01 and dia in verificar):
+            entra = planos.get(dia, 0.0)
+            if entra:
+                fluxos.append((dia.to_pydatetime(), -entra))
+                investido += entra
             nt = notas.loc[dia].dropna()
             nt = nt[[t for t in nt.index if pd.notna(px.get(t)) and px.get(t) > 0]]
             if minimo is not None:
@@ -7779,7 +7783,9 @@ def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, 
                 list(nt[nt >= limite].index)
             for t in esc:
                 vezes[t] = vezes.get(t, 0) + 1
-            if rodar and esc:
+            if not esc and entra:
+                sem_escolha += 1
+            if rodar and esc and entra:
                 for t in list(unid):                    # vende tudo (fica em caixa) e reparte pelos escolhidos
                     if unid[t] and pd.notna(px.get(t)):
                         caixa += unid[t] * px[t]
@@ -7800,6 +7806,7 @@ def _sim_correr_dinamico(tab, notas, compras, modo, limite, rodar, minimo=None, 
     sv, si = pd.Series(val, index=idx), pd.Series(inv, index=idx)
     if len(idx):
         fluxos.append((idx[-1].to_pydatetime(), float(sv.iloc[-1])))
+    _SIM_LOCAL["espera"] = (caixa, sem_escolha)
     return unid, inv_t, sv, si, fluxos, vezes, vendido
 
 
@@ -7910,6 +7917,8 @@ def simular():
     ini_dados = ini.replace(year=ini.year - 11) if dinamico else ini   # nota de preços: precisa de 10 anos antes
     tab_h, sem_cambio = _sim_cotacoes_eur(list(pesos) + ([bench] if bench else []), moedas, ini_dados, fim)
     notas_p = niveis_p = None
+    dias_v = []
+    _SIM_LOCAL["espera"] = (0.0, 0)
     sec = {}
     tipos = {txt(d.get("ticker")).upper(): ("ETF" if d in etfs else "Ação") for d in acoes + etfs if txt(d.get("ticker"))}
     tab = tab_h.loc[tab_h.index >= pd.Timestamp(ini)]
@@ -7941,6 +7950,8 @@ def simular():
     if dinamico:                                          # a nota do painel só nos dias de compra
         dias_c = sorted({tab.index[tab.index.searchsorted(pd.Timestamp(d))] for d, _ in compras
                          if tab.index.searchsorted(pd.Timestamp(d)) < len(tab.index)})
+        dias_v = sorted(set(pd.Series(tab.index, index=tab.index).groupby(tab.index.to_period("M")).first()))
+        dias_c = sorted(set(dias_c) | set(dias_v))
         loc = _SIM_LOCAL.get("tab")
         cols = [t for t in pesos if t in tab.columns and loc is not None and t in loc.columns]
         sec = {}
@@ -7961,7 +7972,8 @@ def simular():
                 continue
             if dinamico:
                 u_, i_, sv_, si_, f_, vz, vd_ = _sim_correr_dinamico(tab[tk], notas_p.reindex(columns=tk), cg, "n", n,
-                                                                     p.get("rodar") == SIM_RODAR[1], nmin)
+                                                                     p.get("rodar") == SIM_RODAR[1], nmin,
+                                                                     verificar=dias_v)
                 vezes.update(vz)
                 vendido.update(vd_)
             else:
@@ -7982,7 +7994,7 @@ def simular():
         limite = (p["n"] or 10) if modo == "n" else (p["n"] if p["n"] is not None else 3.5)
         unid, inv_t, sv, si, fluxos, vezes, vendido = _sim_correr_dinamico(
             tab[list(pesos_ok)], notas_p.reindex(columns=list(pesos_ok)), compras, modo, limite, p.get("rodar") == SIM_RODAR[1], nmin,
-            niveis_p.reindex(columns=list(pesos_ok)) if cod in (10, 12) else None)
+            niveis_p.reindex(columns=list(pesos_ok)) if cod in (10, 12) else None, dias_v)
         pesos_ok = {t: 1.0 for t in inv_t}
         unid = {t: unid.get(t, 0.0) for t in pesos_ok}
     else:
@@ -8006,6 +8018,13 @@ def simular():
              tab[t].first_valid_index() > tab.index[0] + pd.Timedelta(days=10)]
     if tarde:
         notas.append("só com cotações depois do início (entram quando começam): " + ", ".join(tarde[:12]))
+    esp_cx, esp_n = _SIM_LOCAL.get("espera", (0.0, 0))
+    if dinamico and esp_n:
+        notas.append(f"em {esp_n} data(s) de compra nenhum título cumpria os critérios: o dinheiro ficou à espera e "
+                     "entrou no 1.º mês em que algum passou")
+    if dinamico and esp_cx > 0.01:
+        notas.append(f"ATENÇÃO: € {esp_cx:,.2f} ficaram por investir até ao fim (nenhum título voltou a cumprir os "
+                     "critérios) — experimenta baixar a nota mínima (C13) ou o nível mínimo (F6)".replace(",", " "))
     if nmin is not None:
         notas.append(f"só se compram títulos com nota ≥ {nmin:g} na data da compra" if dinamico else
                      f"só entram títulos com nota global de hoje ≥ {nmin:g}")
