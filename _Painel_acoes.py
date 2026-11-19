@@ -502,14 +502,14 @@ def chave_ordem(criterio):
         nt = d.get("nota") if isinstance(d.get("nota"), (int, float)) else p
         if k == "bp_min":               # nota ≥ mínimo primeiro, pelo melhor preço (nível); depois os outros
             nv, jp = d.get("nivel_preco"), d.get("justo_pct")
-            ok = isinstance(nt, (int, float)) and d.get("nota") is not None and round(nt, 1) >= ORD_MIN["v"] - 1e-9 and \
+            ok = isinstance(nt, (int, float)) and d.get("nota") is not None and round(nt, 2) >= ORD_MIN["v"] - 1e-9 and \
                 isinstance(nv, (int, float))
             if ok:
                 return (0, -nv, -(jp if isinstance(jp, (int, float)) else -9), -nt) + desempate(d)
             return (1, 0, 0, -nt, -p) + desempate(d)
         if k == "nt_npmin":             # nível de preço ≥ mínimo primeiro, pela nota global; depois os outros
             nv = d.get("nivel_preco")
-            if isinstance(nv, (int, float)) and round(nv, 1) >= ORD_MIN["v"] - 1e-9:
+            if isinstance(nv, (int, float)) and round(nv, 2) >= ORD_MIN["v"] - 1e-9:
                 return (0, -nt, -nv, -p) + desempate(d)
             return (1, -nt, -p) + desempate(d)
         if k == "det":                  # detidos primeiro; dentro de cada grupo, pela nota global e pelo desempate
@@ -577,7 +577,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V101", "19/11/2026"
+VERSAO, DATA_VERSAO = "V102", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1252,7 +1252,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     except Exception:
         pass
     ws[C_ORD_MIN] = ORD_MIN["v"]
-    ws[C_ORD_MIN].number_format = '0.0'
+    ws[C_ORD_MIN].number_format = '0.00'
     ws[C_ORD_MIN].fill = PatternFill("solid", fgColor="FFF2CC")
     ws[C_ORD_MIN].font = Font(bold=True)
     ws[C_ORD_MIN].alignment = Alignment(horizontal="center", vertical="center")
@@ -5202,10 +5202,10 @@ function mostrar(){
     if(o.includes(':')){const [k,dr]=o.split(':'),g=d=>{const v=k.startsWith('o.')?(d.or||{})[k.slice(2)]:d[k];return typeof v==='number'?v:null;};
       return l.slice().sort((a,b)=>{const x=g(a),y=g(b);if(x==null&&y==null)return (b.nt??-9)-(a.nt??-9);if(x==null)return 1;if(y==null)return -1;return dr==='a'?x-y:y-x;});}
     if(o==='ntp'){const mn=minimo(),
-        ok=d=>d.np!=null&&Math.round(d.np*10)/10>=mn-1e-9;   // primeiro os que têm o nível de preço pedido, pela nota
+        ok=d=>d.np!=null&&Math.round(d.np*100)/100>=mn-1e-9;   // primeiro os que têm o nível de preço pedido, pela nota
       return l.filter(ok).sort((a,b)=>((b.nt??-9)-(a.nt??-9))||((b.np??-9)-(a.np??-9)));}
     if(o==='bpm'){const mn=minimo(),g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9,
-        ok=d=>d.nt!=null&&Math.round(d.nt*10)/10>=mn-1e-9&&d.np!=null;   // primeiro os que cumprem a nota, do mais barato ao mais caro
+        ok=d=>d.nt!=null&&Math.round(d.nt*100)/100>=mn-1e-9&&d.np!=null;   // primeiro os que cumprem a nota, do mais barato ao mais caro
       return l.filter(ok).sort((a,b)=>(g(b)-g(a))||(j(b)-j(a))||((b.nt??-9)-(a.nt??-9)));}
     if(o==='bp'){const g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9;   // nível de preço (5 = muito barata); empate: valor justo
       return l.slice().sort((a,b)=>(g(b)-g(a))||(j(b)-j(a))||((b.nt??-9)-(a.nt??-9)));}
