@@ -577,7 +577,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V102", "19/11/2026"
+VERSAO, DATA_VERSAO = "V103", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -5773,9 +5773,49 @@ NC_P = len(CAB_P)
 P_TAB = f"A{L_TAB + 1}:{get_column_letter(NC_P)}{L_TAB + MAXP}"
 CRITERIOS = ["Maior capitalização", "Mais transacionadas (valor médio/dia 3 meses)",
              "Melhor pontuação (tendência + analistas)", "Maior potencial dos analistas", "Mais subiram em 12 meses",
-             "Baratas e a crescer (P/E até 15 e lucros +10%)"]
+             "Baratas e a crescer (P/E até 15 e lucros +10%)"] + [f"Maior valorização {h} (% por ano)" for h in
+             ("desde sempre", "em 10 anos", "em 5 anos", "em 3 anos", "em 1 ano")]
+# horizontes da valorização (iguais às colunas Valorização do painel): critério -> (meses da reta, mínimo de meses)
+HORIZ_VAL = {"desde sempre": (None, 36), "em 10 anos": (121, 121), "em 5 anos": (61, 61), "em 3 anos": (37, 37),
+             "em 1 ano": (13, 13)}
+
+
+def _horiz_val(crit):
+    m = re.match(r"Maior valorização (.+) \(% por ano\)$", crit or "")
+    return (m.group(1),) + HORIZ_VAL[m.group(1)] if m and m.group(1) in HORIZ_VAL else None
+
+
+def _reta_anual(c):
+    """Subida média por ano da reta que melhor acompanha os fechos mensais c (a mesma das colunas Valorização)."""
+    import numpy as np
+    x = np.arange(len(c)) / 12.0
+    return float(np.exp(np.polyfit(x, np.log(c.to_numpy(dtype=float)), 1)[0]) - 1)
+
+
+def _valorizacoes(yf, tickers, meses, minimo):
+    """{ticker: subida média por ano} na janela pedida (meses=None: desde sempre), com fechos mensais e dividendos."""
+    out, tickers = {}, [t for t in dict.fromkeys(tickers) if t]
+    for i in range(0, len(tickers), 200):
+        lote = tickers[i:i + 200]
+        print(f"   história mensal: {i + len(lote)} de {len(tickers)}...")
+        try:
+            h = _por_ticker(yf.download(lote, period="max", interval="1mo", group_by="ticker", auto_adjust=True,
+                                        threads=True, progress=False), lote)
+        except Exception as e:
+            print("   aviso:", e)
+            continue
+        for t in lote:
+            try:
+                c = h[t]["Close"].dropna()
+                c = c[c > 0]
+                if len(c) < minimo:
+                    continue
+                out[t] = (_reta_anual(c if meses is None else c.iloc[-meses:]), int(c.index[0].year))
+            except Exception:
+                continue
+    return out
 CRITERIOS_ETF = ["Maior dimensão (património do fundo)", "Mais transacionados (valor médio/dia)",
-                 "Melhor pontuação (subida 6 meses + médias)", "Mais subiram em 12 meses"]
+                 "Melhor pontuação (subida 6 meses + médias)", "Mais subiram em 12 meses"] + CRITERIOS[6:]
 # ETFs UCITS (compráveis na Europa) mais conhecidos por categoria: o Yahoo não tem filtro de ETFs, por isso o ★ parte
 # desta lista e ordena-a com os dados do Yahoo (património e negócio); os que o Yahoo não reconhecer ficam de fora.
 ETFS_CANDIDATOS = {
@@ -5918,7 +5958,9 @@ def folha_procurar(wb, pf):
                     "categoria, a partir de uma lista dos mais conhecidos (o Yahoo não tem filtro de ETFs); a dimensão "
                     "aparece na coluna G. " if etf else
                     "★ MAIS SIGNIFICATIVAS: as N ações maiores (capitalização) ou mais transacionadas (valor "
-                    "médio por dia, 3 meses, só acima de 1 000 M de capitalização) da região. ")
+                    "médio por dia, 3 meses, só acima de 1 000 M de capitalização) da região, ou as que mais se valorizaram (subida média "
+                    "por ano da reta das cotações mensais com dividendos, como nas colunas Valorização do painel: desde sempre, "
+                    "10, 5, 3 ou 1 ano), escolhidas entre as até 500 maiores da região. ")
                  + "A mesma empresa / fundo em várias bolsas aparece uma só vez, na bolsa com mais negócio (as outras "
                  "ficam na última coluna). Vêm marcados com x os que ainda não estão no painel; os que já lá estão não "
                  "têm x e não se copiam. ➕ ACRESCENTAR MARCADOS: junta os que têm x à folha Acrescentados e às folhas "
@@ -6193,6 +6235,7 @@ def mais_significativas():
         crit = CRITERIOS[0]
     volume = crit == CRITERIOS[1]
     qualidade = crit in (CRITERIOS[2], CRITERIOS[3])     # precisam de analistas: universo largo, depois escolhe-se
+    hv = _horiz_val(crit)
     filtros, campo = [yf.EquityQuery("gt", ["intradaymarketcap", 1e9 if volume else 0])], "intradaymarketcap"
     if volume:
         campo = "avgdailyvol3m"
@@ -6200,6 +6243,8 @@ def mais_significativas():
         filtros = [yf.EquityQuery("gt", ["intradaymarketcap", 3e8])]    # inclui médias empresas (p. ex. a Soitec)
     elif crit == CRITERIOS[4]:
         filtros, campo = [yf.EquityQuery("gt", ["intradaymarketcap", 1e9])], "fiftytwowkpercentchange"
+    elif hv:                                          # valorização: as maiores da região, depois a reta de cada uma
+        filtros = [yf.EquityQuery("gt", ["intradaymarketcap", 1e9])]
     elif crit == CRITERIOS[5]:
         filtros = [yf.EquityQuery("gt", ["intradaymarketcap", 5e8]),
                    yf.EquityQuery("btwn", ["peratio.lasttwelvemonths", 0, 15]),
@@ -6208,7 +6253,7 @@ def mais_significativas():
     quotes = []
     for regiao in REGIOES[reg]:
         q = yf.EquityQuery("and", [yf.EquityQuery("eq", ["region", regiao])] + filtros)
-        pedidos = min(MAXP, 500 if qualidade else n * 2 if volume else n)   # pontuação/analistas: universo maior
+        pedidos = min(MAXP, 500 if (qualidade or hv) else n * 2 if volume else n)   # pontuação/analistas/valorização: universo maior
         offset = 0
         while offset < pedidos:
             try:
@@ -6246,6 +6291,19 @@ def mais_significativas():
         else:
             chave = cap_usd
         cand.append((chave, cap_usd, x))
+    if hv:
+        nome_h, meses, minimo = hv
+        print(f"A calcular a valorização {nome_h} de {len(cand)} ações (as maiores da região)...")
+        val = _valorizacoes(yf, [x["symbol"] for _, _, x in cand], meses, minimo)
+        novo = []
+        for _, cap_usd, x in cand:
+            v = val.get(x["symbol"])
+            if v:
+                x["_nota"] = f"valorização {nome_h} {v[0]:+.1%}/ano".replace(".", ",") + (f" (dados desde {v[1]})"
+                                                                                       if meses is None else "")
+            novo.append((v[0] if v else None, cap_usd, x))
+        cand = novo
+        print(f"   {len(val)} com história suficiente")
     cand.sort(key=lambda c: (c[0] is None, -(c[0] or 0)))
     if qualidade:
         cand = _por_qualidade(yf, cand, n, so_potencial=crit == CRITERIOS[3])
@@ -6304,7 +6362,9 @@ def etfs_significativos():
         time.sleep(0.2)
     tx = _taxas_usd(yf, {inf.get("currency") for _, inf, _ in dados})
     tend = {}
-    if crit in CRITERIOS_ETF[2:]:                      # pontuação / subida: com as cotações do último ano e meio
+    hv = _horiz_val(crit)
+    val = _valorizacoes(yf, [t for t, _, _ in dados], hv[1], hv[2]) if hv else {}
+    if crit in CRITERIOS_ETF[2:4]:                     # pontuação / subida: com as cotações do último ano e meio
         lst = [t for t, _, _ in dados]
         try:
             h = _por_ticker(yf.download(lst, period="18mo", interval="1d", group_by="ticker", auto_adjust=True,
@@ -6342,6 +6402,11 @@ def etfs_significativos():
         elif crit == CRITERIOS_ETF[3]:
             chave = v.get("m12")
             inf["_nota"] = f"subida 12 meses {v['m12']:+.0%}" if v.get("m12") is not None else None
+        elif hv:
+            vv = val.get(t)
+            chave = vv[0] if vv else None
+            inf["_nota"] = ((f"valorização {hv[0]} {vv[0]:+.1%}/ano".replace(".", ",")
+                             + (f" (dados desde {vv[1]})" if hv[1] is None else "")) if vv else None)
         else:
             chave = neg if crit == CRITERIOS_ETF[1] else aum_usd
         linhas_c.append((chave, aum_usd, t, inf))
