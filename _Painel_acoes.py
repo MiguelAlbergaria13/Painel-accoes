@@ -406,7 +406,7 @@ CRITERIOS_ORD = [
     ("Detidos (x): resultado decrescente", "det_lp_desc", True),
     ("Detidos (x): resultado crescente", "det_lp_asc", True),
     ("Melhor preço para comprar (nível de preço)", "nivel_preco", True),
-    ("Melhor preço com nota ≥ (valor ao lado)", "bp_min", True),
+    ("Melhor preço com nota igual ou maior a (valor ao lado)", "bp_min", True),
     ("Analistas (alvo / preço)", "pot", True),
     ("Valor justo (justo / preço)", "justo_pct", True),
     ("Qualidade (0-5)", "qual", True),
@@ -423,6 +423,7 @@ CRITERIOS_ORD = [
     ("Recomendação", "rec", False),
     ("Mais abaixo do máx. da semana", "dist0", False),
 ]
+ORD_ANTIGOS = {"Melhor preço com nota ≥ (valor ao lado)": "Melhor preço com nota igual ou maior a (valor ao lado)"}   # nomes antigos da lista «Ordenar por»
 ORD_PADRAO = {1: CRITERIOS_ORD[0][0], 2: CRITERIOS_ORD[0][0]}    # as duas folhas: pela nota global
 # barra de topo (V012): linha 3 = ▶ ATUALIZAR (A:D) · o que atualizar (E:G) · Ordenar por (H, I:L) · ↕ ORDENAR (M:N) ·
 # estado (O); linha 4 = ↻ PREÇOS (A:D) · longo prazo mín. (E:F, G) · Situação em (H, I:J, K); linha 5 = bolsas
@@ -490,6 +491,7 @@ def desempate(d):
 
 def chave_ordem(criterio):
     """Função de ordenação (para sorted) de um critério; os valores em falta ficam no fim."""
+    criterio = ORD_ANTIGOS.get(criterio, criterio)
     _, k, desc = next((c for c in CRITERIOS_ORD if c[0] == criterio), CRITERIOS_ORD[0])
 
     def f(d):
@@ -499,7 +501,7 @@ def chave_ordem(criterio):
         nt = d.get("nota") if isinstance(d.get("nota"), (int, float)) else p
         if k == "bp_min":               # nota ≥ mínimo primeiro, pelo melhor preço (nível); depois os outros
             nv, jp = d.get("nivel_preco"), d.get("justo_pct")
-            ok = isinstance(nt, (int, float)) and d.get("nota") is not None and nt >= ORD_MIN["v"] and \
+            ok = isinstance(nt, (int, float)) and d.get("nota") is not None and round(nt, 1) >= ORD_MIN["v"] - 1e-9 and \
                 isinstance(nv, (int, float))
             if ok:
                 return (0, -nv, -(jp if isinstance(jp, (int, float)) else -9), -nt) + desempate(d)
@@ -569,7 +571,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V094", "19/11/2026"
+VERSAO, DATA_VERSAO = "V095", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1244,7 +1246,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     except Exception:
         pass
     ws[C_ORD_MIN] = ORD_MIN["v"]
-    ws[C_ORD_MIN].number_format = '"≥ "0.0'
+    ws[C_ORD_MIN].number_format = '0.0'
     ws[C_ORD_MIN].fill = PatternFill("solid", fgColor="FFF2CC")
     ws[C_ORD_MIN].font = Font(bold=True)
     ws[C_ORD_MIN].alignment = Alignment(horizontal="center", vertical="center")
@@ -1291,7 +1293,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
     from openpyxl.formatting.rule import FormulaRule as _FR      # valores que só contam com uma escolha: cinzento
     _cz, _fz = PatternFill("solid", bgColor="808080"), Font(color="BFBFBF")
     for cel_, f_ in ((C_SEL_V, f'LEFT(${C_SEL[0]}${C_SEL[1:]},2)<>"NG"'),
-                     (C_ORD_MIN, f'${C_ORD[0]}${C_ORD[1:]}<>"Melhor preço com nota ≥ (valor ao lado)"'),
+                     (C_ORD_MIN, f'${C_ORD[0]}${C_ORD[1:]}<>"Melhor preço com nota igual ou maior a (valor ao lado)"'),
                      (C_DATAREF, f'${C_REF[0]}${C_REF[1:]}<>"Data (escrever ao lado)"')):
         ws.conditional_formatting.add(cel_, _FR(formula=[f_], fill=_cz, font=_fz))
     dvr = DataValidation(type="list", formula1='"' + ",".join(REFS) + '"', allow_blank=False)
@@ -4609,8 +4611,8 @@ def ler_estado():
         for idx in (1, 2):
             r = tentar([{"op": "ler", "folha": idx, "rng": (C_ORD if novo else CEL_ANTIGAS["ord"]) if recente else "D3"},
                         {"op": "ler", "folha": idx, "rng": f"{get_column_letter(COL['nota'])}{L0}"}])
-            if r and txt(r[0][0][0]) in nomes_crit:
-                criterios[idx] = txt(r[0][0][0])
+            if r and ORD_ANTIGOS.get(txt(r[0][0][0]), txt(r[0][0][0])) in nomes_crit:
+                criterios[idx] = ORD_ANTIGOS.get(txt(r[0][0][0]), txt(r[0][0][0]))
                 # 1.ª vez com a nota global: quem ordenava pela pontuação passa a ordenar pela nota global
                 if criterios[idx] == "Pontuação (5 → 1)" and not txt(r[1][0][0]).startswith("Nota global"):
                     criterios[idx] = ORD_PADRAO[idx]
@@ -5010,8 +5012,8 @@ main{padding:8px 10px 40px}
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
 <div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="G">Gráficos</button></div>
-<div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
-<option value="nt">Nota global</option><option value="bp">Melhor preço para comprar</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
+<div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><input id="nm" type="number" min="0" max="5" step="0.1" value="4" title="Nota global igual ou maior a" style="display:none;width:58px"><select id="o">
+<option value="nt">Nota global</option><option value="bp">Melhor preço para comprar</option><option value="bpm">Mais barata primeiro, nota igual ou maior a…</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div>
 </header>
 <div id="glob" style="display:none"></div>
 <div id="qd" style="display:none;position:fixed;top:70px;left:8px;right:8px;z-index:20;background:#fffbe6;color:#222;border:1px solid #c9b458;border-radius:12px;padding:10px 34px 10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:13px;line-height:1.5"><button id="qdx" style="position:absolute;top:6px;right:6px;width:24px;height:24px;border:0;border-radius:50%;background:#d93025;color:#fff;font-weight:700">✕</button><div id="qdt"></div></div>
@@ -5187,6 +5189,9 @@ function mostrar(){
   const prep=l=>{if(q) l=l.filter(d=>(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q));
     if(o.includes(':')){const [k,dr]=o.split(':'),g=d=>{const v=k.startsWith('o.')?(d.or||{})[k.slice(2)]:d[k];return typeof v==='number'?v:null;};
       return l.slice().sort((a,b)=>{const x=g(a),y=g(b);if(x==null&&y==null)return (b.nt??-9)-(a.nt??-9);if(x==null)return 1;if(y==null)return -1;return dr==='a'?x-y:y-x;});}
+    if(o==='bpm'){const m=parseFloat(document.getElementById('nm').value),mn=isNaN(m)?0:m,g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9,
+        ok=d=>d.nt!=null&&Math.round(d.nt*10)/10>=mn-1e-9&&d.np!=null;   // primeiro os que cumprem a nota, do mais barato ao mais caro
+      return l.slice().sort((a,b)=>(ok(b)-ok(a))||(ok(a)?(g(b)-g(a))||(j(b)-j(a))||((b.nt??-9)-(a.nt??-9)):((b.nt??-9)-(a.nt??-9))));}
     if(o==='bp'){const g=d=>d.np??-9,j=d=>(d.or||{}).justo_pct??-9;   // nível de preço (5 = muito barata); empate: valor justo
       return l.slice().sort((a,b)=>(g(b)-g(a))||(j(b)-j(a))||((b.nt??-9)-(a.nt??-9)));}
     return l.slice().sort((a,b)=>o==='n'?String(a.n).localeCompare(b.n):o==='tmp'?(b.tmp??-9)-(a.tmp??-9):
@@ -5211,7 +5216,10 @@ function mostrar(){
 document.querySelectorAll('.tabs .tab').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tabs .tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');aba=b.dataset.t;mostrar();}));
 document.getElementById('q').addEventListener('input',mostrar);
-document.getElementById('o').addEventListener('change',mostrar);
+document.getElementById('o').addEventListener('change',()=>{const v=document.getElementById('o').value==='bpm';
+  document.getElementById('nm').style.display=v?'':'none';try{localStorage.setItem('nm_o',document.getElementById('o').value);}catch(e){}mostrar();});
+document.getElementById('nm').addEventListener('input',()=>{try{localStorage.setItem('nm_v',document.getElementById('nm').value);}catch(e){}mostrar();});
+try{const v=localStorage.getItem('nm_v');if(v)document.getElementById('nm').value=v;}catch(e){}
 mostrar();
 </script>
 </body>
