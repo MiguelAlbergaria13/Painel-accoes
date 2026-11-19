@@ -569,7 +569,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V091", "19/11/2026"
+VERSAO, DATA_VERSAO = "V092", "19/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -6775,7 +6775,9 @@ SIM_COMPRAR = ["1 · Os meus títulos (com x)",
                "7 · N ações + N ETFs, nota global de hoje",
                "8 · N ações + N ETFs, nota do painel em cada data",
                "9 · Os N com melhor preço (nível de preço) e nota global ≥ mínimo (hoje)",
-               "10 · Os N com melhor preço em cada data e nota ≥ mínimo (só ações dos EUA, dados da SEC)"]
+               "10 · Os N com melhor preço em cada data e nota ≥ mínimo (só ações dos EUA, dados da SEC)",
+               "11 · Todos com nível de preço ≥ F6 e nota global ≥ mínimo (hoje)",
+               "12 · Todos com nível de preço ≥ F6 e nota ≥ mínimo em cada data (só ações dos EUA, dados da SEC)"]
 
 
 def _sim_cod(t):
@@ -6928,7 +6930,7 @@ def folha_simulador(wb):
             c.number_format = fmt
     linhas_e = [("Investimento inicial", "C4", p["ini_sim"], ["Sim", "Não"], "Valor (€)", "F4", p["ini_val"]),
                 ("Reforço periódico", "C5", p["per"], SIM_PERIODOS, "Valor de cada reforço (€)", "F5", p["per_val"]),
-                ("Comprar", "C6", p["comprar"], SIM_COMPRAR, "N ou nota mínima (opções 2, 3, 5, 6, 9)", "F6", p["n"]),
+                ("Comprar", "C6", p["comprar"], SIM_COMPRAR, "N (2, 5, 9, 10) · nota mín. (3, 6) · nível mín. (11, 12)", "F6", p["n"]),
                 ("Entre", "C7", p["entre"], SIM_ENTRE, None, None, None),
                 ("Data inicial", "C8", _sim_data(p["d_ini"]) or p["d_ini"], None, "Data final (vazio = hoje)", "F8",
                  _sim_data(p["d_fim"]) or p["d_fim"]),
@@ -6936,7 +6938,7 @@ def folha_simulador(wb):
                 ("Ao reclassificar (em cada data)", "C10", p.get("rodar") or SIM_RODAR[0], SIM_RODAR, None, None, None),
                 ("Ações: N primeiras", "C11", p.get("n_a"), None, "€ em ações por reforço", "F11", p.get("v_a")),
                 ("ETFs: N primeiros", "C12", p.get("n_e"), None, "€ em ETFs por reforço", "F12", p.get("v_e")),
-                ("Nota mínima (opções 5, 6, 8, 9)", "C13", p.get("nota_min"), None, None, None, None)]
+                ("Nota mínima (5, 6, 8-12)", "C13", p.get("nota_min"), None, None, None, None)]
     for rot, cel, v, itens, rot2, cel2, v2 in linhas_e:
         r = int(cel[1:])
         ws[f"B{r}"] = rot
@@ -6953,6 +6955,16 @@ def folha_simulador(wb):
                  "«Rodar a carteira» vende o que saiu e reparte tudo pelos escolhidos, sem comissões nem impostos)")
     ws["G10"].font = Font(italic=True, size=9, color="808080")
     ws["G9"] = "(ex.: IWDA.AS = ações mundiais em €; vazio = sem comparação)"
+    from openpyxl.formatting.rule import FormulaRule
+    cod_f = 'IFERROR(VALUE(LEFT($C$6,FIND(" ",$C$6&" ")-1)),0)'
+    cinza = PatternFill("solid", bgColor="808080")
+    usa = {"F6": (2, 3, 5, 6, 9, 10, 11, 12), "C7:D7": (1, 2, 3, 5, 6, 9, 11), "C10:D10": (5, 6, 8, 10, 12),
+           "C11:D11": (7, 8), "F11": (7, 8), "C12:D12": (7, 8), "F12": (7, 8), "C13:D13": (5, 6, 8, 9, 10, 11, 12),
+           "F5": (1, 2, 3, 4, 5, 6, 9, 10, 11, 12),
+           f"B{SIM_LIN_CART}:C{SIM_LIN_CART + SIM_MAX_CART - 1}": (4,)}
+    for rng_, cods in usa.items():                       # não conta para a escolha feita em «Comprar» -> cinzento
+        f_ = "NOT(OR(" + ",".join(f"{cod_f}={c}" for c in cods) + "))"
+        ws.conditional_formatting.add(rng_, FormulaRule(formula=[f_], fill=cinza, font=Font(color="BFBFBF")))
     ws["E13"] = ("(opções 5, 6, 8: não se compra nenhum título com nota abaixo disto na data da compra — só com dados "
                  "antigos a nota das ações vai no máximo a ≈4,2; opção 9: só entram os de nota global de hoje ≥ isto; "
                  "vazio = sem mínimo)")
@@ -7808,10 +7820,10 @@ def simular():
     nomes = {txt(d.get("ticker")).upper(): txt(d.get("nome")) for d in acoes + etfs if txt(d.get("ticker"))}
     escolha = p["comprar"]
     cod = _sim_cod(escolha)
-    dinamico = cod in (5, 6, 8, 10)
+    dinamico = cod in (5, 6, 8, 10, 12)
     duplo = cod in (7, 8)
     grupos = None
-    nmin = p.get("nota_min") if (dinamico or cod == 9) else None   # nota mínima: opções 5, 6, 8, 9 e 10
+    nmin = p.get("nota_min") if (dinamico or cod in (9, 11)) else None   # nota mínima: 5, 6, 8, 9, 10, 11, 12
     nota_de = {txt(d.get("ticker")).upper(): _sim_num(d.get("nota")) for d in acoes + etfs if txt(d.get("ticker"))}
     passa = lambda d: nmin is None or (_sim_num(d.get("nota")) is not None and _sim_num(d["nota"]) >= nmin)
     if not dinamico:                                      # nota mínima: só entram os que a cumprem (nota de hoje)
@@ -7834,8 +7846,13 @@ def simular():
         grupos = [(ga, n_a, float(p.get("v_a") or 0)), (ge, n_e, float(p.get("v_e") or 0))]
         grupos = [g_ for g_ in grupos if g_[0] and g_[1] > 0]
         pesos = {t: 1.0 for g_ in grupos for t in g_[0]}
-    elif cod == 10:
+    elif cod in (10, 12):
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in acoes if txt(d.get("ticker"))}
+    elif cod == 11:                                       # todos com nível de preço ≥ F6 (e nota ≥ mínimo, acima)
+        nv_min = p["n"] if p["n"] is not None else 3.5
+        sel = [d for d in univ_c if isinstance(_sim_num(d.get("nivel_preco")), float)
+               and _sim_num(d["nivel_preco"]) >= nv_min]
+        pesos = {txt(d["ticker"]).upper(): 1.0 for d in sel}
     elif dinamico:                                          # todos os títulos do universo; escolhe-se em cada data
         pesos = {txt(d["ticker"]).upper(): 1.0 for d in univ if txt(d.get("ticker"))}
     elif cod == 9:                                        # melhor preço (nível de preço) entre os de nota ≥ mínimo
@@ -7951,11 +7968,11 @@ def simular():
         pesos_ok = {t: 1.0 for t in inv_t}
         unid = {t: unid.get(t, 0.0) for t in pesos_ok}
     elif dinamico:
-        modo = "n" if cod in (5, 10) else "nota"
+        modo = "n" if cod in (5, 10) else "nota"          # 6 e 12: todos os que passam o limite
         limite = (p["n"] or 10) if modo == "n" else (p["n"] if p["n"] is not None else 3.5)
         unid, inv_t, sv, si, fluxos, vezes, vendido = _sim_correr_dinamico(
             tab[list(pesos_ok)], notas_p.reindex(columns=list(pesos_ok)), compras, modo, limite, p.get("rodar") == SIM_RODAR[1], nmin,
-            niveis_p.reindex(columns=list(pesos_ok)) if cod == 10 else None)
+            niveis_p.reindex(columns=list(pesos_ok)) if cod in (10, 12) else None)
         pesos_ok = {t: 1.0 for t in inv_t}
         unid = {t: unid.get(t, 0.0) for t in pesos_ok}
     else:
@@ -7990,7 +8007,7 @@ def simular():
                      f"divulgados nessa data ({len(sec)} empresas); nas outras, sem qualidade e saúde (contam como o "
                      f"sinal); analistas nunca (não há histórico); {p.get('rodar')}; {len(vezes)} títulos diferentes "
                      "escolhidos ao longo do tempo; a lista de títulos é a de hoje (as que desapareceram não entram)")
-    elif cod in (2, 3, 7, 9):
+    elif cod in (2, 3, 7, 9, 11):
         notas.append("escolha feita pela nota de hoje: o passado fica favorecido")
     infl_s, infl_fonte = None, None
     try:
