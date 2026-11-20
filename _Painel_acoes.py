@@ -600,7 +600,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V116", "20/11/2026"
+VERSAO, DATA_VERSAO = "V117", "20/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1524,7 +1524,7 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 font=Font(bold=v in (5, 1)), stopIfTrue=True))
     nt = let(COL["notas"])
     ws.conditional_formatting.add(faixa("notas"), FormulaRule(
-        formula=[f'ISNUMBER(SEARCH("VENDA POR PROTEÇÃO",{nt}{L0+1}))'], font=Font(color="C00000", bold=True)))
+        formula=[f'ISNUMBER(SEARCH("VENDA:",{nt}{L0+1}))'], font=Font(color="C00000", bold=True)))
     pc = let(COL["pe"])                               # P/E: verde barato … vermelho caro
     for f, cor in ((f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}<=15)", "C6EFCE"),
                    (f"AND(ISNUMBER({pc}{L0+1}),{pc}{L0+1}>15,{pc}{L0+1}<=25)", "E2EFDA"),
@@ -2082,13 +2082,13 @@ def pontuar(d, preco):
         if m and ((REF or datetime.now()) - datetime.strptime(m.group(2), "%d/%m/%Y")).days <= DIAS_INVERSAO:
             sinal = "compra devido a inversão" if m.group(1) == "subida" else "venda devido a inversão"
     d["sinal"] = sinal
-    notas = re.sub(r"(; )?VENDA POR PROTEÇÃO:[^;]*", "", str(d.get("notas") or "")).strip("; ")
+    notas = re.sub(r"(; )?VENDA( POR PROTEÇÃO)?:[^;]*", "", str(d.get("notas") or "")).strip("; ")
     if p == 1:
         motivo = ("queda brusca confirmada: preço abaixo da venda mínima (rede de segurança) e da média 200"
                   if rede and preco < rede else
                   "tendência de descida (média 100 abaixo da 200 e preço abaixo da média 200), para evitar uma queda "
                   "prolongada e sucessiva")
-        notas = (notas + "; " if notas else "") + "VENDA POR PROTEÇÃO: " + motivo
+        notas = (notas + "; " if notas else "") + "VENDA: " + motivo
     d["notas"] = notas or None
     if lp is not None:
         base_lp = re.sub(r":.*$", "", str(d.get("lp_txt") or f"{lp:+.1%}/ano"))
@@ -2112,6 +2112,7 @@ def pontuar(d, preco):
     d["pont"], d["coment"] = p, " · ".join(c) or None
     d["_vprox"], d["_cprox"] = venda_prox, compra_prox
     d["_vigiar"] = queda_vigiar
+    d["_venda_tipo"] = ("queda brusca" if rede and preco < rede else "tendência de descida") if p == 1 else None
     d["nota"] = nota_global(d)
     d["decisao"] = decisao_global(d)
 
@@ -3442,7 +3443,7 @@ def decisao_global(d):
     alerta = txt(d.get("saude")).startswith("ALERTA")
     sobre = sobre_compra(d)
     if p == 1:
-        return NIVEIS[1] + " (proteção)" + sobre
+        return NIVEIS[1] + f" ({d.get('_venda_tipo') or 'tendência de descida'})" + sobre
     if d.get("_vigiar") and p == 2:
         return "Manter (queda brusca: vigiar)" + sobre
     if p == 2.5:
