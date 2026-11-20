@@ -600,7 +600,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V117", "20/11/2026"
+VERSAO, DATA_VERSAO = "V118", "20/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1138,6 +1138,10 @@ def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), est
                 p[cel] = v
     folha_acrescentados(wb, acrescentados)
     wb.active = 0
+    try:
+        folha_compra(wb)
+    except Exception as e:
+        print("   aviso: folha Compra não criada:", e)
     try:
         folha_pesos(wb)
     except Exception as e:
@@ -4884,6 +4888,8 @@ class Excel:
         self.caminho, self.livro, self.modo = caminho, os.path.basename(caminho), None
 
     def ops(self, ops, guardar=False):
+        ops = [{**o, "folha": NOME_PROC[o["folha"]]} if isinstance(o.get("folha"), int) and o.get("folha") in NOME_PROC
+               else o for o in ops]               # Procurar ações/ETFs pelo nome (a folha Compra vem antes delas)
         if self.modo in (None, "pywin32"):
             try:
                 r = _ops_pywin32(self.livro, ops, guardar)
@@ -7162,6 +7168,8 @@ def main():
         ver_posicao()
     elif "fechar_quadro" in arg:             # ✕ do quadro da carteira (versões anteriores)
         Excel(FICHEIRO).ops([{"op": "fechar_quadro"}], guardar=True)
+    elif "://compra" in arg:                 # folha Compra: ▶ CALCULAR COMPRA
+        calcular_compra()
     elif "simular" in arg:                   # folha Simulador: ▶ SIMULAR (calcula à parte)
         simular()
     elif "comparar" in arg:                  # folha Comparar notas: ⚖ COMPARAR
@@ -7396,6 +7404,192 @@ def atualizar_tudo(so=None, servidor=None):
 
 
 # ================================================================================================ Simulador
+FOLHA_COMPRA = "Compra"
+FICH_COMPRA = os.path.join(PASTA, BASE + "_compra.json")
+COMPRA_PADRAO = {"min_a": 3.5, "min_e": 3.5, "total": 1000.0, "pct_a": 0.6, "so_compra": "x", "detidos": "x"}
+CMP_L0 = 13                     # primeira linha da tabela de resultados da folha Compra
+CMP_MAX = 150
+CMP_CAB = ("Não quero (x)", "Título", "Ticker", "Tipo", "Nota global", "Decisão", "Preço atual", "Compra máxima (ordem limite)",
+           "Compra máxima / atual (%)", "Peso no grupo (%)", "Valor a investir (€)", "Nº de ações (aprox.)", "Tenho",
+           "Câmbio para €")
+
+
+def _nota_txt_formula(cel):
+    """Fórmula que diz a que corresponde a nota global mínima (mesmos limites da decisão)."""
+    return (f'=IF(ISNUMBER({cel}),IF({cel}>=3.95,"= Compra forte",IF({cel}>=3.5,"= Compra média",IF({cel}>=3,'
+            f'"= Compra","= abaixo de Compra (Manter): entram títulos que o painel não aconselha comprar"))),"")')
+
+
+def folha_compra(wb):
+    """Folha Compra (entre ETFs e Procurar): quanto comprar de cada título, a partir de um valor total, da divisão
+    ações/ETFs e da nota global mínima de cada grupo. Valor de cada título proporcional à nota global."""
+    p = {**COMPRA_PADRAO, **{k: v for k, v in _ler_json(FICH_COMPRA, {}).items() if v not in (None, "")}}
+    ws = wb.create_sheet(FOLHA_COMPRA, 2)
+    ws["A1"] = "Compra: quanto investir em cada título"
+    ws["A1"].font = Font(size=14, bold=True)
+    ws["B2"] = ("Escolhe a amarelo e carrega em ▶ CALCULAR COMPRA (só lê as folhas Ações e ETFs, não as muda). Entram "
+                "os títulos com nota global igual ou maior ao mínimo de cada grupo (e, com x, só os que têm decisão de "
+                "compra: o sinal ≥ 3). O valor de cada grupo divide-se pelos títulos em proporção da nota global (nota "
+                "4 recebe o dobro de nota 2). A coluna \"Compra máxima\" é o preço até onde vale a pena comprar (ordem "
+                "limite), das folhas Ações/ETFs. Nº de ações = valor ÷ preço atual em euros (aproximado). Para tirar um "
+                "título, põe x na coluna A («Não quero»): os valores dos outros do mesmo grupo recalculam-se logo "
+                "(também ao mudar o valor total ou a % em ações); o x fica guardado para os próximos cálculos.")
+    ws["B2"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["B2"].font = Font(italic=True, size=9, color="595959")
+    ws.merge_cells("B2:M2")
+    ws.row_dimensions[2].height = 64
+    amarelo = PatternFill("solid", fgColor="FFF2CC")
+    borda = Border(*(Side(style="thin", color="BFBFBF"),) * 4)
+    entradas = (("B4", "Ações: nota global igual ou maior a", "C4", p["min_a"], "0.00"),
+                ("B5", "ETFs: nota global igual ou maior a", "C5", p["min_e"], "0.00"),
+                ("B6", "Valor total a investir (€)", "C6", p["total"], '#,##0.00 "€"'),
+                ("B7", "Distribuição: % em ações", "C7", p["pct_a"], "0%"),
+                ("B8", "Só com decisão de compra (sinal ≥ 3) (x)", "C8", p["so_compra"], "@"),
+                ("B9", "Incluir os que já tenho (x)", "C9", p["detidos"], "@"))
+    for cb, rot, cv, v, fm in entradas:
+        ws[cb] = rot
+        ws[cb].font = Font(bold=True)
+        ws[cb].alignment = Alignment(horizontal="right")
+        ws[cv] = v
+        ws[cv].fill, ws[cv].border, ws[cv].number_format = amarelo, borda, fm
+        ws[cv].font = Font(bold=True, size=12)
+        ws[cv].alignment = Alignment(horizontal="center")
+    ws["D4"], ws["D5"] = _nota_txt_formula("C4"), _nota_txt_formula("C5")
+    ws["D6"] = '=IF(ISNUMBER(C6),"Ações: "&TEXT(C6*C7,"#,##0.00")&" € · ETFs: "&TEXT(C6*(1-C7),"#,##0.00")&" €","")'
+    ws["D7"] = '=IF(ISNUMBER(C7),"ETFs: "&TEXT(1-C7,"0%"),"")'
+    for c_ in ("D4", "D5", "D6", "D7"):
+        ws[c_].font = Font(bold=True, color="7030A0")
+    ws["D8"] = "Sem x: entram também os de nota alta com o sinal ainda fraco (a decisão diz porquê)."
+    ws["D9"] = "Sem x: só títulos que ainda não tens."
+    for c_ in ("D8", "D9"):
+        ws[c_].font = Font(italic=True, size=9, color="808080")
+    botao(ws, "H4", "▶ CALCULAR COMPRA", "painelacoes://compra", "548235", "375623", 14)
+    ws.merge_cells("H4:J5")
+    ws["H7"] = "Escalas da nota global: ≥ 3,95 compra forte · ≥ 3,5 compra média · ≥ 3 compra"
+    ws["H7"].font = Font(size=9, color="595959")
+    ws["B11"] = "Resultado"
+    ws["B11"].font = Font(bold=True, size=12)
+    for j, h in enumerate(CMP_CAB, 1):
+        c = ws.cell(CMP_L0 - 1, j, h)
+        c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F4E79")
+        c.alignment, c.border = Alignment(horizontal="center", vertical="center", wrap_text=True), borda
+    ws.row_dimensions[CMP_L0 - 1].height = 32
+    fmts = {5: "0.00", 7: "#,##0.00", 8: "#,##0.00", 9: "0.0%", 10: "0.0%", 11: '#,##0.00 "€"', 12: "#,##0.00"}
+    for r in range(CMP_L0, CMP_L0 + CMP_MAX):
+        for j, fm in fmts.items():
+            ws.cell(r, j).number_format = fm
+        ws.cell(r, 1).alignment = Alignment(horizontal="center")
+    for col, w in zip("ABCDEFGHIJKLMN", (9, 34, 11, 7, 8, 30, 11, 12, 10, 9, 13, 10, 7, 8)):
+        ws.column_dimensions[col].width = w
+    ws.column_dimensions["N"].hidden = True
+    from openpyxl.formatting.rule import FormulaRule as FR0
+    ws.conditional_formatting.add(f"A{CMP_L0}:A{CMP_L0 + CMP_MAX}", FR0(       # coluna «Não quero»: amarela nos títulos
+        formula=[f'AND($C{CMP_L0}<>"",LEFT($B{CMP_L0},5)<>"Total")'], fill=PatternFill("solid", bgColor="FFF2CC")))
+    ws.conditional_formatting.add(f"B{CMP_L0}:M{CMP_L0 + CMP_MAX}", FR0(       # excluído: cinzento riscado
+        formula=[f'LOWER(TRIM($A{CMP_L0}))="x"'], font=Font(color="A6A6A6", strike=True)))
+    from openpyxl.formatting.rule import FormulaRule as FR
+    for lim, cor in ((3.95, "63BE7B"), (3.5, "A9D18E"), (3.0, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
+        ws.conditional_formatting.add(f"E{CMP_L0}:E{CMP_L0 + CMP_MAX}", FR(
+            formula=[f"AND(ISNUMBER($E{CMP_L0}),$E{CMP_L0}>={lim})"], fill=PatternFill("solid", bgColor=cor), stopIfTrue=True))
+    ws.conditional_formatting.add(f"B{CMP_L0}:M{CMP_L0 + CMP_MAX}", FR(
+        formula=[f'LEFT($B{CMP_L0},5)="Total"'], font=Font(bold=True), fill=PatternFill("solid", bgColor="DDEBF7")))
+    res = _ler_json(FICH_COMPRA, {}).get("linhas") or []
+    for i, lin in enumerate(res[:CMP_MAX]):
+        for j, v in enumerate(lin, 1):
+            ws.cell(CMP_L0 + i, j, v)
+    ws.freeze_panes = f"A{CMP_L0}"
+
+
+def _num_ou(v, padrao=None):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    try:
+        return float(str(v).replace("€", "").replace("%", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return padrao
+
+
+def calcular_compra():
+    """▶ CALCULAR COMPRA (folha Compra)."""
+    ex = Excel(FICHEIRO)
+    r = ex.ops([{"op": "ler", "folha": FOLHA_COMPRA, "rng": "C4:C9"}])
+    vals = [lin[0] for lin in r[0]]
+    p = dict(COMPRA_PADRAO)
+    for k, v in zip(("min_a", "min_e", "total", "pct_a"), vals[:4]):
+        x = _num_ou(v)
+        if x is not None:
+            p[k] = x
+    if p["pct_a"] > 1:
+        p["pct_a"] /= 100
+    p["so_compra"] = "x" if txt(vals[4]).lower() == "x" else ""
+    p["detidos"] = "x" if txt(vals[5]).lower() == "x" else ""
+    excluir = set(_ler_json(FICH_COMPRA, {}).get("excluir") or [])
+    try:                                          # o que está marcado agora na coluna «Não quero»
+        t_ = ex.ops([{"op": "ler", "folha": FOLHA_COMPRA, "rng": f"A{CMP_L0}:C{CMP_L0 + CMP_MAX - 1}"}])[0]
+        vistos = {txt(l_[2]).upper() for l_ in t_ if txt(l_[2])}
+        excluir = (excluir - vistos) | {txt(l_[2]).upper() for l_ in t_ if txt(l_[2]) and txt(l_[0]).lower() == "x"}
+    except Exception:
+        pass
+    ultima = get_column_letter(len(COLS))
+    r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
+    acoes, etfs = (list(linhas_por_cabecalho(tab, i)) for i, tab in zip((1, 2), r))
+    linhas, avisos = [], []
+    L1_, LN_ = CMP_L0, CMP_L0 + CMP_MAX - 1
+    rngD, rngE, rngA = f"$D${L1_}:$D${LN_}", f"$E${L1_}:$E${LN_}", f"$A${L1_}:$A${LN_}"
+    for nome_g, grupo, mn, valor in (("Ações", acoes, p["min_a"], p["total"] * p["pct_a"]),
+                                     ("ETFs", etfs, p["min_e"], p["total"] * (1 - p["pct_a"]))):
+        esc = []
+        for d in grupo:
+            ng = d.get("nota_geral") if isinstance(d.get("nota_geral"), (int, float)) else d.get("nota")
+            if not isinstance(ng, (int, float)) or round(ng, 2) < mn - 1e-9:
+                continue
+            if p["so_compra"] and not txt(d.get("decisao")).startswith("Compra"):
+                continue
+            tem = e_detido(d.get("det")) or bool(d.get("qtd"))
+            if tem and not p["detidos"]:
+                continue
+            esc.append((ng, d, tem))
+        esc.sort(key=lambda x: -x[0])
+        soma = sum(ng for ng, _, _ in esc)
+        tipo = "Ação" if nome_g == "Ações" else "ETF"
+        val_g = "$C$6*$C$7" if nome_g == "Ações" else "$C$6*(1-$C$7)"
+        if not esc:
+            avisos.append(f"{nome_g}: nenhum título cumpre os critérios; os € {valor:,.2f} ficam por investir "
+                          "(baixa a nota mínima ou tira o x de «só com decisão de compra».)".replace(",", " "))
+            continue
+        for ng, d, tem in esc:
+            r_ = CMP_L0 + len(linhas)
+            pr = d.get("preco")
+            fx = 1.0 if txt(d.get("moeda")) == "EUR" else (d.get("fx_alt") if txt(d.get("moeda_alt")) == "EUR" else None)
+            tk = txt(d.get("ticker"))
+            peso = (f'=IF(LOWER(TRIM($A{r_}))="x",0,IFERROR($E{r_}/SUMIFS({rngE},{rngD},"{tipo}",{rngA},"<>x"),0))')
+            linhas.append(["x" if tk.upper() in excluir else "", txt(d.get("nome")) or tk, tk, tipo,
+                           round(ng, 2), txt(d.get("decisao")), pr, d.get("teto"), d.get("teto_pct"),
+                           peso, f"=J{r_}*{val_g}",
+                           f'=IF(AND(ISNUMBER(G{r_}),ISNUMBER(N{r_}),G{r_}>0,K{r_}>0),K{r_}/(G{r_}*N{r_}),"")',
+                           "★" if tem else "", fx if isinstance(fx, (int, float)) else None])
+        r_ = CMP_L0 + len(linhas)
+        linhas.append(["", f"Total {'ações' if nome_g == 'Ações' else 'ETFs'}", "", "", None, "", None, None, None,
+                       f'=SUMIFS($J${L1_}:$J${r_ - 1},{rngD.replace(str(LN_), str(r_ - 1))},"{tipo}")',
+                       f'=SUMIFS($K${L1_}:$K${r_ - 1},{rngD.replace(str(LN_), str(r_ - 1))},"{tipo}")', None, "", None])
+        linhas.append([""] * len(CMP_CAB))
+    for a in avisos:
+        linhas.append(["", a] + [""] * (len(CMP_CAB) - 2))
+    _gravar_json(FICH_COMPRA, {**p, "excluir": sorted(excluir), "linhas": linhas[:CMP_MAX]})
+    vazio = [[None] * len(CMP_CAB) for _ in range(CMP_MAX)]
+    for i, lin in enumerate(linhas[:CMP_MAX]):
+        vazio[i] = [None if v == "" else v for v in lin]
+    ex.ops([{"op": "escrever", "folha": FOLHA_COMPRA, "rng": f"A{CMP_L0}:{get_column_letter(len(CMP_CAB))}{CMP_L0 + CMP_MAX - 1}",
+             "valores": vazio}], guardar=True)
+    n = sum(1 for lin in linhas if lin[2])
+    if excluir:
+        print(f"   «Não quero»: {len(excluir)} título(s) com x (ficam de fora e o valor vai para os outros)")
+    print(f"Compra: {n} títulos; ações € {p['total'] * p['pct_a']:,.2f}, ETFs € {p['total'] * (1 - p['pct_a']):,.2f}."
+          .replace(",", " "))
+    for a in avisos:
+        print("   " + a)
+
+
 FOLHA_SIM = "Simulador"
 FICH_SIM = os.path.join(PASTA, "_Painel_acoes_simulador.json")   # escolhas e último resultado do simulador
 SIM_PERIODOS = ["Nenhum", "Semanal", "Mensal", "Trimestral", "Semestral", "Anual"]
@@ -8983,7 +9177,7 @@ def acao_do_botao(arg):
     """(chave, descrição) da ação pedida, para a janela de progresso e para a estimativa do tempo."""
     a = arg.lower()
     for chave, padrao, txt_ in (
-            ("reclassificar", "reclassificar", "Reclassificar e reordenar"), ("simular", "simular", "Simulador"), ("comparar", "comparar", "Comparar notas"),
+            ("reclassificar", "reclassificar", "Reclassificar e reordenar"), ("simular", "simular", "Simulador"), ("compra", "://compra", "Calcular compra"), ("comparar", "comparar", "Comparar notas"),
             ("ordenar", "ordenar", "Ordenar"),
             ("procurar", "procurar", "Procurar"), ("top", "://top", "Mais significativas"),
             ("base", "://base", "Lista base"), ("acrescentar", "acrescentar", "Acrescentar marcados"),
