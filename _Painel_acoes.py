@@ -583,7 +583,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V107", "20/11/2026"
+VERSAO, DATA_VERSAO = "V109", "20/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -618,6 +618,8 @@ def carteira(d):
     q = num(d.get("qtd")) or qtd_detida(d.get("det"))
     pc, p = num(d.get("pcompra")), d.get("preco")
     d["valor_eur"] = d["lp_eur"] = d["lp_pct"] = None
+    if isinstance(d.get("pont"), (int, float)) and (d.get("pont") == 1 or d.get("_vigiar")):
+        d["decisao"] = decisao_global(d)       # com o preço de compra já conhecido: « · +x% sobre a tua compra»
     if q:
         d["qtd"] = q
         if not e_detido(d.get("det")) or qtd_detida(d.get("det")) is not None:
@@ -1789,7 +1791,7 @@ DIAS_INVERSAO = 30    # cruzamento das médias há menos disto (dias de calendá
 # Longo prazo: inclinação da reta de tendência das cotações mensais desde sempre (o que o Yahoo tiver; com dividendos),
 # em subida média por ano. Abaixo de LP_MIN (ou negativa), o que seria compra (3 a 5) passa a 2.5 "Não Rent. Longo Prazo": uma ação que ao longo dos anos
 # não sobe (p. ex. a Soitec, que já esteve muito mais alta) não é "compra forte" só porque está num bom momento.
-LP_AJUDA = "FATOR DE TENDÊNCIA (folha Ponderações, ligado por omissão): a nota global é multiplicada por um fator de 0,60 a 1,00 que sai da média ponderada das inclinações das retas das cotações (desde sempre, 10 anos, 5 anos, último ano, 6 meses; as quedas contam a triplicar). Quem sobe de forma consistente fica com 1,00; quem estagnou ou cai é penalizado aos poucos. A coluna \"Longo prazo\" mostra as retas e o fator. Com o fator ligado, G4 não conta. SEM O FATOR (sem x na folha Ponderações): " + "LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. "
+LP_AJUDA = "FATOR DE TENDÊNCIA (folha Ponderações, ligado por omissão): a nota global é multiplicada por um fator de cerca de 0,60 a 1,09 que sai da média ponderada das inclinações das retas das cotações (desde sempre, 10 anos, 5 anos, último ano, 6 meses; as quedas contam a dobrar). Quem sobe de forma consistente fica com 1,00; quem estagnou ou cai é penalizado aos poucos. A coluna \"Longo prazo\" mostra as retas e o fator. Com o fator ligado, G4 não conta. SEM O FATOR (sem x na folha Ponderações): " + "LONGO PRAZO MÍN./ANO (célula G4, 3% por omissão): para cada título desenha-se a linha reta que melhor acompanha as cotações mensais (com dividendos), uma desde que há dados e outra só dos últimos 5 anos. A inclinação de cada linha diz quanto o título subiu, em média, por ano (p. ex. +8%/ano). Conta a MENOR das duas. Se ficar abaixo do valor de G4 (ou for negativa), o título não tem subido de forma consistente ao longo dos anos: mesmo que esteja num bom momento, a nota fica no máximo em 2,5 (\"Não Rent. Longo Prazo\") em vez de compra. A coluna \"Longo prazo\" mostra as três subidas: desde sempre; 5 anos; 1 ano (a de 1 ano é só informativa). Mais exigente: sobe G4 (p. ex. 5%); para desligar este travão: -100%. "
 LP_MIN = 0.03         # valor por defeito; o que conta é o da célula C_LPMIN (escolhido por ti)
 C_LPMIN = "G4"
 
@@ -1955,8 +1957,11 @@ def pontuar(d, preco):
     compra_prox = -PROXIMO < g < 0 and g5 is not None and g > g5
     venda_prox = 0 <= g < PROXIMO and g5 is not None and g < g5
     sobe, desce = g > 0 or compra_prox, g < 0 and not compra_prox
-    if rede and preco < rede:
+    queda_vigiar = False
+    if rede and preco < rede and p200 < 0:         # queda brusca confirmada pela tendência (abaixo da média 200)
         p = 1
+    elif rede and preco < rede:                    # queda brusca, mas ainda acima da média 200: vigiar, não vender
+        p, queda_vigiar = 2, True
     elif etf_mom:
         p = (5 if pos6 <= ETF_TOP5 and sobe else 4 if pos6 <= ETF_TOP4 and sobe else 3 if sobe
              else 1 if (p200 < 0 and mom6 < 0) else 2)
@@ -1993,7 +1998,9 @@ def pontuar(d, preco):
     elif 0 <= g < PROXIMO:
         c.append(f"médias perto ({g:+.1%}) mas a afastar-se para cima")
     if rede and preco < rede:
-        c.append("preço abaixo da venda mínima (rede de segurança)")
+        c.append("preço abaixo da venda mínima (rede de segurança)" + (
+            f", mas ainda acima da média 200 ({p200:+.1%}): queda brusca a vigiar, não se vende já (vende-se se "
+            "descer abaixo da média 200)" if queda_vigiar else " e abaixo da média 200: queda confirmada"))
     elif g > 0 and p200 < 0:
         c.append(f"preço abaixo da média 200 ({p200:+.1%}): tendência a enfraquecer")
     elif g < 0 and p200 > 0:
@@ -2048,7 +2055,8 @@ def pontuar(d, preco):
     d["sinal"] = sinal
     notas = re.sub(r"(; )?VENDA POR PROTEÇÃO:[^;]*", "", str(d.get("notas") or "")).strip("; ")
     if p == 1:
-        motivo = ("queda brusca: preço abaixo da venda mínima (rede de segurança)" if rede and preco < rede else
+        motivo = ("queda brusca confirmada: preço abaixo da venda mínima (rede de segurança) e da média 200"
+                  if rede and preco < rede else
                   "tendência de descida (média 100 abaixo da 200 e preço abaixo da média 200), para evitar uma queda "
                   "prolongada e sucessiva")
         notas = (notas + "; " if notas else "") + "VENDA POR PROTEÇÃO: " + motivo
@@ -2074,6 +2082,7 @@ def pontuar(d, preco):
         c.append(f"qualidade {q:.1f}/5 ({detalhe_qualidade(d)})".replace(".", ",", 1))
     d["pont"], d["coment"] = p, " · ".join(c) or None
     d["_vprox"], d["_cprox"] = venda_prox, compra_prox
+    d["_vigiar"] = queda_vigiar
     d["nota"] = nota_global(d)
     d["decisao"] = decisao_global(d)
 
@@ -2564,21 +2573,22 @@ PESOS_PROPOSTOS = {"pont": 0.30, "qual": 0.30, "saude": 0.20, "tend": 0.20,
                    "nivel_caro": 2.0, "lp_brando": 0, "pico_lucro": 1,
                    "pe_hab_max": 35.0, "cap_pe_sinal": 1,
                    "ft_usar": 1, "ft_s": 0.10, "ft_10": 0.15, "ft_5": 0.20, "ft_1": 0.35, "ft_6": 0.20,
-                   "ft_mult": 3.0, "ft_r2": 1, "ft_lim": 0.60, "ft_vol": 1, "ft_vol0": 0.25, "ft_volpen": 0.04,
-                   "ft_sub": 0.075, "ft_sub_etf": 0.025, "ft_vol0_etf": 0.35,
+                   "ft_mult": 2.0, "ft_r2": 1, "ft_lim": 0.60, "ft_vol": 1, "ft_vol0": 0.25, "ft_volpen": 0.03,
+                   "ft_sub": 0.05, "ft_sub_etf": 0.02, "ft_vol0_etf": 0.35,
                    "ft_bonus": 1, "ft_bmax": 0.09, "ft_bvol": 0.20}
 # Fator de tendência (folha Ponderações): média ponderada das inclinações das retas (desde sempre, 10 e 5 anos com
 # fechos mensais; 1 ano e 6 meses com fechos diários), com as quedas multiplicadas (ft_mult) e as subidas recentes
 # pesadas pela regularidade (R²). Fator = interpolação da média nesta escala; multiplica a nota global. Substitui o
 # travão do longo prazo (G4 -> 2,5) e o «estabilizou» da nota da tendência.
-FT_ESCALA = [(-0.20, 0.60), (0.0, 0.80), (0.05, 0.90), (0.10, 1.00)]
+FT_ESCALA = [(-0.20, 0.70), (0.0, 0.85), (0.05, 0.93), (0.10, 1.00)]   # V108: mais suave
+FT_MARCA = "fator V108"     # folha Ponderações (H2): sem isto, os valores do fator lidos são os da versão anterior
 FT_PER = [("ft_s", "Desde sempre", "val_sempre", None), ("ft_10", "Últimos 10 anos", "val10", None),
           ("ft_5", "Últimos 5 anos", "val5", None), ("ft_1", "Último ano", "inc1a", "r2_1a"),
           ("ft_6", "Últimos 6 meses", "inc6m", "r2_6m")]
 FT_TXT = "Usar o fator (x):"
 FT_R2_TXT = "Subidas recentes pela regularidade (x):"
 FT_VOL_TXT = "Penalizar a volatilidade (x):"
-FT_VOL_MIN = 0.80          # a volatilidade nunca tira mais de 20%
+FT_VOL_MIN = 0.85          # a volatilidade nunca tira mais de 15%
 FT_BONUS_TXT = "Bónus de estabilidade (x):"
 TRAVOES_CARO = [  # (chave, nome, o que representa, formato)
     ("nivel_caro", "Nível de preço até ao qual é cara",
@@ -2665,7 +2675,8 @@ def carregar_pesos(ex=None):
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D21:E21"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D28:E28"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "H1"},
                         {"op": "ler", "folha": FOLHA_PESOS, "rng": "D31:E31"}, {"op": "ler", "folha": FOLHA_PESOS, "rng": "B34:E35"},
-                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "B38:E58"}])
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "B38:E58"},
+                        {"op": "ler", "folha": FOLHA_PESOS, "rng": "H2"}])
             antiga = not txt(r[3][0][0]).startswith("ETFs: tendência")   # folha da V039: sem os quadros novos
             if antiga:
                 r[1][2][0], r[2][0][0], r[2][1][0] = 0, 0, 0
@@ -2697,6 +2708,7 @@ def carregar_pesos(ex=None):
                 lidos["cap_pe_sinal"] = 1 if (txt(r[10][1][2]) == CAP_TXT and txt(r[10][1][3]).lower() == "x") else 0
             lidos["pico_lucro"] = 1 if (len(r) > 9 and txt(r[9][0][0]) == PICO_TXT and txt(r[9][0][1]).lower() == "x") else 0
             ft = r[11] if len(r) > 11 else []
+            ft_novo = len(r) > 12 and txt(r[12][0][0]) == FT_MARCA    # folha já com os valores suaves da V108
             if ft and txt(ft[0][2]) == FT_TXT:                    # quadro do fator de tendência (V104)
                 lidos["ft_usar"] = 1 if txt(ft[0][3]).lower() == "x" else 0
                 for (k, nome, _, _), lin in zip(FT_PER, ft[2:7]):
@@ -2704,6 +2716,9 @@ def carregar_pesos(ex=None):
                         lidos[k] = pc(lin[3])
                 for lin in ft[7:]:
                     nm = txt(lin[0])
+                    if not ft_novo and nm in ("Multiplicador das quedas", "Penalização por cada +10% de volatilidade",
+                                              "Subida mínima por ano (ações)", "Subida mínima por ano (ETFs)"):
+                        continue                         # V108: passam aos valores novos (mais suaves) uma vez
                     try:
                         if nm == "Multiplicador das quedas":
                             lidos["ft_mult"] = float(str(lin[3]).replace(",", "."))
@@ -2893,7 +2908,7 @@ def fator_vol(vol, etf=False):
     if vol is None or not PESOS.get("ft_vol", 1):
         return 1.0
     v0 = PESOS.get("ft_vol0_etf", 0.35) if etf else PESOS.get("ft_vol0", 0.25)
-    return max(FT_VOL_MIN, min(1.0, 1 - PESOS.get("ft_volpen", 0.04) * (vol - v0) / 0.10))
+    return max(FT_VOL_MIN, min(1.0, 1 - PESOS.get("ft_volpen", 0.03) * (vol - v0) / 0.10))
 
 
 def fator_estab(vol, r2, inc1a):
@@ -2911,14 +2926,14 @@ def fator_tend(d):
     """Fator de tendência (folha Ponderações) -> (fator, média ponderada, [(período, inclinação, conta)]) ou None.
     Média ponderada das inclinações das retas (desde sempre, 10, 5 anos, último ano, 6 meses), cada uma limitada a
     ± ft_lim; as quedas contam ft_mult vezes; as subidas do último ano e dos 6 meses contam × R² (regularidade).
-    Fator = escala FT_ESCALA (−20%/ano ou pior → 0,60; 0% → 0,80; +5% → 0,90; +10% ou mais → 1,00)."""
+    Fator = escala FT_ESCALA (−20%/ano ou pior → 0,70; 0% → 0,85; +5% → 0,93; +10% ou mais → 1,00)."""
     import numpy as np
     if not PESOS.get("ft_usar", 1):
         return None
     n = lambda k: d.get(k) if isinstance(d.get(k), (int, float)) else None
-    lim, mult = PESOS.get("ft_lim", 0.6), PESOS.get("ft_mult", 3.0)
+    lim, mult = PESOS.get("ft_lim", 0.6), PESOS.get("ft_mult", 2.0)
     etf = txt(d.get("tipo")) == "ETF"
-    sub = PESOS.get("ft_sub_etf", 0.025) if etf else PESOS.get("ft_sub", 0.075)   # subida mínima exigida por ano
+    sub = PESOS.get("ft_sub_etf", 0.02) if etf else PESOS.get("ft_sub", 0.05)   # subida mínima exigida por ano
     partes, soma, sw = [], 0.0, 0.0
     for k, nome, kv, kr in FT_PER:
         v = n(kv)
@@ -2967,7 +2982,8 @@ def fator_txt(ft):
     if fb > 1.004:
         porque += f"; estável (oscila pouco e sobe com regularidade) → × {fb:.2f}".replace(".", ",")
     return (f"fator {f:.2f}".replace(".", ",") + f" (média ponderada {pc(m)}/ano; {porque})"
-            + (f" → penaliza a nota global × {f:.2f}".replace(".", ",") if f < 0.995 else
+            + (f" → penaliza a nota global × {f:.2f}".replace(".", ",") if f < 0.90 else
+               f" → reduz ligeiramente a nota global × {f:.2f}".replace(".", ",") if f < 0.995 else
                f" → premeia a nota global × {f:.2f}".replace(".", ",") + " (no máx. 5)" if f > 1.004 else ""))
 
 
@@ -3135,15 +3151,15 @@ def folha_pesos(wb):
                  "colunas Valorização) de 5 períodos: desde sempre, 10 anos e 5 anos com os fechos mensais; último ano e "
                  "6 meses com os fechos diários. A inclinação de cada reta é a subida média por ano. Faz-se a média "
                  "ponderada destas inclinações com os pesos em baixo, depois de: 0) tirar a cada uma a subida mínima por ano "
-                 "(linhas 54-55: 7,5% nas ações, 2,5% nos ETFs), para o que sobe pouco contar como queda; 1) limitar cada "
+                 "(linhas 54-55: 5% nas ações, 2% nos ETFs), para o que sobe pouco contar como queda; 1) limitar cada "
                  "uma a ± o limite (as "
                  "retas curtas, passadas a ano, dão valores enormes); 2) multiplicar as QUEDAS pelo multiplicador (cair "
                  "pesa mais do que subir: não investir no que cai há 1 ou 2 anos); 3) com x, multiplicar as SUBIDAS do "
                  "último ano e dos 6 meses pela regularidade da reta (R², de 0 = aos saltos a 1 = sempre a subir): uma "
                  "subida errática (p. ex. +20% com quedas de 30% pelo meio) conta pouco. A média dá o fator pela escala "
                  "da linha 49, sem degraus. NOTA GLOBAL = nota × fator. Quem sobe de forma consistente tem 1,00 (não "
-                 "muda); quem estagnou ou cai perde até 40%; com a volatilidade (linha 50), quem oscila muito perde até mais "
-                 "20%; com o bónus de estabilidade (linha 56), quem oscila pouco e sobe com regularidade ganha até 9%. Com x, o travão de G4 (2,5 \"Não Rent. Longo Prazo\") e o "
+                 "muda); quem estagnou ou cai perde até 30%; com a volatilidade (linha 50), quem oscila muito perde até mais "
+                 "15%; com o bónus de estabilidade (linha 56), quem oscila pouco e sobe com regularidade ganha até 9%. Com x, o travão de G4 (2,5 \"Não Rent. Longo Prazo\") e o "
                  "«estabilizou» da nota da tendência deixam de se usar. A coluna \"Longo prazo\" mostra o fator e "
                  "porquê (a laranja quando penaliza). Também se usa no Simulador e no Comparar notas.")
     ws["C38"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -3178,7 +3194,7 @@ def folha_pesos(wb):
     ws.conditional_formatting.add("E45", FormulaRule(formula=['ABS($E$45-1)>0.0005'],
                                                      fill=PatternFill("solid", bgColor="FF9999")))
     for i, (nome, txt_, kp, fm) in enumerate((
-            ("Multiplicador das quedas", "Uma queda conta este número de vezes (3: cair 10%/ano pesa como −30%/ano).",
+            ("Multiplicador das quedas", "Uma queda conta este número de vezes (2: cair 10%/ano pesa como −20%/ano).",
              "ft_mult", "0.0"),
             ("Limite de cada inclinação (±)", "Cada inclinação conta no máximo isto, a subir ou a descer, antes do "
              "multiplicador (as retas de 6 meses e 1 ano passadas a ano dão saltos enormes).", "ft_lim", "0%")), 46):
@@ -3206,8 +3222,9 @@ def folha_pesos(wb):
         ws[c_].alignment = Alignment(horizontal="center", vertical="center")
     ws["B49"] = "Escala do fator"
     ws["B49"].font = Font(bold=True)
-    ws["C49"] = ("Média ponderada −20%/ano ou pior → 0,60 · 0%/ano → 0,80 · +5%/ano → 0,90 · +10%/ano ou mais → 1,00 "
-                 "(em linha reta entre estes pontos). Ex.: média −2,8%/ano → 0,77: nota 4,0 passa a 3,09.")
+    ws["C49"] = ("Média ponderada −20%/ano ou pior → 0,70 · 0%/ano → 0,85 · +5%/ano → 0,93 · +10%/ano ou mais → 1,00 "
+                 "(em linha reta entre estes pontos). Ex.: média −2%/ano → 0,835: nota 4,0 passa a 3,34. Na coluna Longo "
+                 "prazo: «penaliza» (a laranja) só abaixo de 0,90; entre 0,90 e 1 diz «reduz ligeiramente».")
     ws["C49"].alignment = Alignment(wrap_text=True, vertical="center")
     ws["C49"].font = Font(size=9)
     ws.row_dimensions[49].height = 30
@@ -3215,8 +3232,8 @@ def folha_pesos(wb):
                  "título que oscila muito (sobe e desce aos saltos), mesmo que a tendência seja boa. Volatilidade = "
                  "desvio-padrão anual das variações diárias do último ano (um ETF do mundo anda por 12-15%, uma "
                  "grande empresa estável 20-25%, NVIDIA ≈ 40%, pequenas tecnológicas 60-90%). Até ao valor da linha 51 "
-                 "não penaliza; acima, tira o valor da linha 52 por cada +10%; nunca tira mais de 20%. Ex. (25% e 4%): "
-                 "40% → × 0,94; 50% → × 0,90; 80% ou mais → × 0,80.")
+                 "não penaliza; acima, tira o valor da linha 52 por cada +10%; nunca tira mais de 15%. Ex. (25% e 3%): "
+                 "40% → × 0,955; 50% → × 0,925; 75% ou mais → × 0,85.")
     ws["C50"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["C50"].font = Font(size=9)
     ws.row_dimensions[50].height = 75
@@ -3241,8 +3258,8 @@ def folha_pesos(wb):
     ws["C53"] = ("ETFs: um ETF de setor (p. ex. semicondutores) oscila mais do que uma ação grande sem ser mais arriscado "
                  "do que ela, porque está diversificado; por isso só penaliza acima deste valor.")
     ws["C54"] = ("Subida mínima exigida por ano: a cada inclinação tira-se este valor ANTES do multiplicador das quedas. "
-                 "Um período que subiu menos do que isto conta como queda (× 3). Ex. (7,5%): uma reta de +4%/ano conta "
-                 "−3,5% × 3 = −10,5%; uma de +12% conta +4,5%. A média volta depois a somar o valor e passa pela escala da "
+                 "Um período que subiu menos do que isto conta como queda (× 2). Ex. (5%): uma reta de +3%/ano conta "
+                 "−2% × 2 = −4%; uma de +12% conta +7%. A média volta depois a somar o valor e passa pela escala da "
                  "linha 49: quem sobe sempre mais de 10%/ano fica com 1,00; quem tem períodos abaixo do mínimo perde.")
     ws["C55"] = ("Nos ETFs, mais baixa: um ETF largo (mundo, EUA) rende historicamente 7 a 10%/ano e não deve ser "
                  "castigado por isso.")
@@ -3274,6 +3291,8 @@ def folha_pesos(wb):
         ws.row_dimensions[int(c_[1:])].height = h_
     ws["H1"] = MARCA_PESOS
     ws["H1"].font = Font(size=7, color="BFBFBF")
+    ws["H2"] = FT_MARCA
+    ws["H2"].font = Font(size=7, color="BFBFBF")
     ws["C21"].font = Font(italic=True, size=8, color="595959")
     ws["C21"].alignment = Alignment(wrap_text=True, vertical="center")
     ws.row_dimensions[21].height = 30
@@ -3330,6 +3349,18 @@ def texto_pesos(ranking=True):
             f"tendência de longo prazo") + " (folha Ponderações)"
 
 
+def sobre_compra(d):
+    """Nos títulos detidos com preço médio de compra: « · +85% sobre a tua compra: realizar ganho?» (só informação;
+    as regras do sinal são as mesmas para todos)."""
+    pc, pr = d.get("pcompra"), d.get("preco")
+    q = d.get("qtd") if isinstance(d.get("qtd"), (int, float)) else qtd_detida(d.get("det"))
+    if not (q or e_detido(d.get("det"))) or not isinstance(pc, (int, float)) or not isinstance(pr, (int, float)) or pc <= 0:
+        return ""
+    r = pr / pc - 1
+    t = f" · {r:+.0%} sobre a tua compra".replace("-", "−")
+    return t + (": realizar ganho?" if r > 0 else ": cortar a perda?")
+
+
 def decisao_global(d):
     """Decisão pela nota global, sem contrariar o sinal: só há compra se a pontuação do sinal for ≥ 3 (e então o
     nível vem da nota global: ≥ 4,5 forte, ≥ 3,75 média, ≥ 2,75 compra, abaixo disso manter); venda se o sinal for 1."""
@@ -3337,8 +3368,11 @@ def decisao_global(d):
     if not isinstance(p, (int, float)):
         return None
     alerta = txt(d.get("saude")).startswith("ALERTA")
+    sobre = sobre_compra(d)
     if p == 1:
-        return NIVEIS[1]
+        return NIVEIS[1] + " (proteção)" + sobre
+    if d.get("_vigiar") and p == 2:
+        return "Manter (queda brusca: vigiar)" + sobre
     if p == 2.5:
         return NIVEIS[2.5] + (" + saúde frágil" if alerta else "")
     cara = ""                                          # "cara" aparece na coluna do nível de preço
