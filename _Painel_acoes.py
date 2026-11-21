@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V134", "21/11/2026"
+VERSAO, DATA_VERSAO = "V135", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -5739,7 +5739,7 @@ function cartao(d){
   ${(d.be!=null||(d.pr!=null&&d.pr>0))?`<span style="float:right;display:flex;flex-direction:column;align-items:flex-end;gap:3px;margin-left:4px">${d.pr!=null&&d.pr>0?`<span class="dec" title="PER (preço / lucro dos últimos 12 meses)" style="background:${d.pr<=15?'#C6E5B3':d.pr>40?'#F8A5A6':d.pr>25?'#FCE4D6':'#eceff3'};color:#1c1e21">PE ${num(d.pr,d.pr>=100?0:1)}</span>`:''}${d.be!=null?`<span class="dec" title="Beta: volatilidade face ao S&amp;P 500" style="background:${d.be<0.8?'#C6E5B3':d.be>1.5?'#F8A5A6':d.be>1.2?'#FCE4D6':'#eceff3'};color:#1c1e21">β ${num(d.be,2)}</span>`:''}</span>`:''}<span class="dec" style="background:${corDec}">${esc(dc)}</span>${d.nt!=null&&d.ng!=null?` <span class="dec" style="background:${cor(d.nt)}" title="Nota geral: negócio, tendência e momento, sem o preço">geral ${num(d.nt,1)}</span>`:''}${d.np!=null?` <span class="dec" style="background:${d.nc||'#eceff3'};color:${/muito/.test(d.nr||'')?'#fff':'#1c1e21'}">${num(d.np,1)} ${esc(d.nr||'')}</span>`:''}${d.qn!=null?`<div class="pos"><div>Nº${d.br?' · '+d.br:''}<b>${num(d.qn,2)}</b></div><div>Preço médio<b>${d.pc!=null?pr(d.pc):'–'}</b></div>
   <div>Valor total<b>${d.vd!=null?eur(d.vd):'–'}${d.lpp!=null?` <span style="color:${d.lpp>=0?'#1e8e3e':'#d93025'}">(${pct2(d.lpp)})</span>`:''}</b></div>
   <div>Lucro / prejuízo<b>${d.le!=null?`<span style="color:${d.le>=0?'#1e8e3e':'#d93025'}">${d.le>=0?'+':'−'}${eur(Math.abs(d.le))}</span>`:'–'}</b></div></div>`:''}
-  <div class="lv"><div class="rt">Compra</div><div>Máxima (ordem limite)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+  <div class="lv"><div class="rt">Compra</div><div>Preço compra (Limite)<b>${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
   <div style="background:none;border:0"></div>
   <div class="rt">Vendas</div><div>Razoável<b>${pr(d.va)} <small>${pct(d.vap)}</small></b></div>
   <div class="red">Rede de segurança<b>${pr(d.vm)} <small>${pct(d.vmp)}</small></b>${d.vmc!=null?`<small style="display:block;color:${d.vmc>=0?'#1e8e3e':'#d93025'}">${d.vmc>=0?'ganhas':'perdes'} ${pct(Math.abs(d.vmc)).replace('+','')} sobre a tua compra</small>`:''}</div></div><div class="more">`;
@@ -5774,8 +5774,9 @@ function compra(){
   <label>Ações: nota global ≥<input id="ca" inputmode="decimal" value="${num(c.a,2)}"></label>
   <label>ETFs: nota global ≥<input id="ce" inputmode="decimal" value="${num(c.e,2)}"></label>
   <label>Valor total (€)<input id="ct" inputmode="decimal" value="${num(c.t,2)}"></label>
-  <label>% em ações<input id="cp" inputmode="decimal" value="${num(c.p,0)}"></label></div>
-  <label class="chk"><input type="checkbox" id="cs"${ck(c.s)}> Só com decisão de compra (inclui «esperar»)</label>
+  <label>% em ações<input id="cp" inputmode="decimal" value="${num(c.p,0)}%"></label></div>
+  <label class="chk"><input type="checkbox" id="cs"${ck(c.s)}> Só os que o painel manda comprar</label>
+  <div style="color:var(--mu);font-size:11px;margin:2px 0 0 26px">Ligado: só entram decisões «Compra forte / média / Compra» (também «… : esperar»). Desligado: entram também os que estão em Manter (ou Venda) mas têm a nota global acima do mínimo.</div>
   <label class="chk"><input type="checkbox" id="ch"${ck(c.h)}> Incluir os que já tenho</label>
   <div id="cx" style="color:var(--mu);font-size:11px;margin-top:4px"></div></div><div id="cr"></div>`;
 }
@@ -5804,10 +5805,10 @@ function calcCompra(){
     const cards=esc_.filter(d=>!q||(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q)).map(d=>{
       const f=fora(d),w=f||!soma?0:d.ngc/soma,v=w*val,pe=d.p!=null&&d.fx!=null?d.p*d.fx:null,na=pe&&v>0?v/pe:null;
       return `<div class="card cmp${f?' fora':''}"><div class="top"><div class="nota" style="background:${corG(d.ngc)}">${num(d.ngc,2)}</div>
-      <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
+      <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/chart/${encodeURIComponent(d.t)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${d.t?`<a href="https://finance.yahoo.com/chart/${encodeURIComponent(d.t)}" target="_blank" rel="noopener" style="color:inherit">${esc(d.t)} 📈</a>`:''}</span></div>
       <div class="px">${eur(v)}<span>${num(w*100,1)}% do grupo</span></div></div>
       <span class="dec" style="background:${corDecF(d)};${dc_(d)}">${esc(d.dc)}</span>
-      <div class="lv3"><div>Preço atual<b>${pr(d.p)} ${esc(d.m)}</b></div><div>Compra máxima<b class="cmx">${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+      <div class="lv3"><div>Preço atual<b>${pr(d.p)} ${esc(d.m)}</b></div><div>Preço compra (Limite)<b class="cmx">${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
       <div>Nº de ações<b>${na==null?'–':num(na,2)}</b></div></div>
       <div class="cbt"><button data-k="nq" data-t="${esc(T(d))}" class="${nq.has(T(d))?'on':''}">Não quero</button><button data-k="nd" data-t="${esc(T(d))}" class="${nd.has(T(d))?'on':''}">Não disponível</button></div></div>`;});
     esc_.forEach(d=>{if(!fora(d)&&soma)tv+=d.ngc/soma*val;});
@@ -5818,6 +5819,9 @@ function calcCompra(){
 }
 const dc_=d=>(d.dc||'').includes(': esperar')?'color:#5B2C83;font-weight:700':(d.dc||'').startsWith('Venda')?'font-weight:700':'';
 function ligarCompra(){
+  const cp=document.getElementById('cp');                       // % sempre com o símbolo (60%, não 0,6)
+  cp.addEventListener('focus',()=>{cp.value=cp.value.replace('%','').trim();});
+  cp.addEventListener('blur',()=>{let v=nPt(cp.value);if(v!=null&&v>0&&v<=1)v*=100;cp.value=v==null?'':num(v,0)+'%';});
   ['ca','ce','ct','cp'].forEach(id=>{const e=document.getElementById(id);e.addEventListener('input',calcCompra);
     e.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();e.blur();}});});
   ['cs','ch'].forEach(id=>document.getElementById(id).addEventListener('change',calcCompra));
