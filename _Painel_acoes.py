@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V132", "21/11/2026"
+VERSAO, DATA_VERSAO = "V134", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -5612,6 +5612,15 @@ main{padding:8px 10px 40px}
 #glob{background:var(--card);border:1px solid var(--li);border-radius:12px;margin:8px 10px 0;padding:8px 12px;font-size:13px}
 #glob b{font-size:15px}
 .sec{font-size:15px;font-weight:600;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--li)}
+.cfg{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}.cfg label{display:flex;flex-direction:column;font-size:12px;color:var(--mu);gap:3px}
+.cfg input{width:100%;flex:none;background:#fff2cc;color:#1c1e21;font-weight:700;font-size:15px;text-align:center;padding:6px}
+.chk{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}.chk input{flex:none;width:18px;height:18px}
+.lv3{display:grid;grid-template-columns:1fr 1.2fr 0.9fr;gap:6px;margin-top:8px}
+.lv3 div{background:var(--bg);border-radius:8px;padding:6px 8px;font-size:11px;color:var(--mu)}.lv3 b{display:block;font-size:13px;color:var(--tx)}
+.lv3 b.cmx{font-size:16px}
+.cbt{display:flex;gap:6px;margin-top:8px}.cbt button{flex:1;border:1px solid var(--li);border-radius:8px;padding:6px;background:var(--card);color:var(--tx);font-size:12px}
+.cbt button.on{background:#7f7f7f;color:#fff;border-color:#7f7f7f}
+.card.fora{opacity:.55}.card.fora .nm b,.card.fora .px{text-decoration:line-through}
 </style>
 </head>
 <body>
@@ -5621,7 +5630,7 @@ main{padding:8px 10px 40px}
 <div id="mn" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap"><button class="tab" data-a="precos">Preços</button><button class="tab" data-a="completa">Tudo</button><button class="tab" data-a="assinalados">Assinalados</button><input id="ng" class="tab" type="number" min="0" max="5" step="0.1" placeholder="NG ≥" style="width:70px"><button class="tab" id="ngok">OK</button></div>
 <div class="at" id="av" style="display:none;margin-top:4px;font-weight:600"></div>
 <div class="at" id="at"></div>
-<div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="G">Gráficos</button></div>
+<div class="tabs"><button class="tab on" data-t="A">Ações</button><button class="tab" data-t="E">ETFs</button><button class="tab" data-t="X">Detidos</button><button class="tab" data-t="C">Compra</button><button class="tab" data-t="G">Gráficos</button></div>
 <div class="bar"><input id="q" type="search" placeholder="Procurar nome ou código"><select id="o">
 <option value="ng:d">Nota global (nota geral + preço)</option><option value="nt">Nota geral (sem o preço)</option><option value="bpg">Mais barata primeiro, nota global igual ou maior a…</option><option value="ngp">Melhor nota global, nível de preço igual ou maior a…</option><option value="bp">Melhor preço para comprar</option><option value="bpm">Mais barata primeiro, nota igual ou maior a…</option><option value="ntp">Melhor nota, nível de preço igual ou maior a…</option><option value="pt:d">Pontuação do sinal</option><option value="np:d">Nível de preço (mais barata primeiro)</option><option value="q:d">Qualidade</option><option value="s:d">Saúde financeira</option><option value="o.pot:d">Analistas (alvo / preço)</option><option value="o.justo_pct:d">Valor justo / preço</option><option value="be:a">Beta (mais defensivas primeiro)</option><option value="be:d">Beta (mais voláteis primeiro)</option><option value="o.var1d:d">Subida no último dia</option><option value="o.var1m:d">Subida no último mês</option><option value="o.val_sempre:d">Valorização desde sempre</option><option value="o.val10:d">Valorização 10 anos</option><option value="o.val5:d">Valorização 5 anos</option><option value="o.val3:d">Valorização 3 anos</option><option value="o.val1:d">Valorização 1 ano</option><option value="o.dist0:a">Mais abaixo do máx. da semana</option><option value="vd">Valor detido</option><option value="tmp">Compra máx. mais perto</option><option value="n">Nome</option></select></div><div id="nmb"><span id="nml">Nota geral igual ou maior a</span><input id="nm" type="text" inputmode="decimal" value="4"><span id="nmc" style="opacity:.8"></span></div>
 </header>
@@ -5746,6 +5755,77 @@ function cartao(d){
   if(d.no) h+=`<p><i>Notas:</i> ${esc(d.no)}</p>`;
   return h+'</div></div>';
 }
+// ---- separador Compra (como a folha Compra do Excel): quanto investir em cada título
+const CMP0={a:3.5,e:3.5,t:1000,p:60,s:1,h:1};
+// valem sempre as escolhas guardadas mais recentes: as do telemóvel ou as da folha Compra (no último ▶ CALCULAR COMPRA)
+const tsX=D.cmp&&D.cmp.ts||0;
+const cmpCfg=()=>{let c=null;try{c=JSON.parse(localStorage.getItem('cmp_cfg')||'null');}catch(e){}
+  if(c&&(c.ts||0)<tsX)c=null;
+  const x=Object.assign({},CMP0,D.cmp||{},c||{});delete x.nq;delete x.nd;return x;};
+const cmpX=()=>{let c=null;try{c=JSON.parse(localStorage.getItem('cmp_x')||'null');}catch(e){}
+  if(c&&(c.ts||0)<tsX)c=null;
+  return c||{nq:(D.cmp&&D.cmp.nq)||[],nd:(D.cmp&&D.cmp.nd)||[]};};
+const nPt=v=>{const x=parseFloat(String(v).replace(/\s|€|%/g,'').replace(',','.'));return isNaN(x)?null:x;};
+const corDecF=d=>{const dc=d.dc||'';return dc.includes(': esperar')?'#D9C3E9':/saúde frágil/i.test(dc)?'#F8CBAD':
+  dc.startsWith('Venda')?'#F8696B':/Longo Prazo/.test(dc)?'#F4B183':dc.startsWith('Manter')?'#FFEB9C':corG(d.ngc);};
+function compra(){
+  const c=cmpCfg(),ck=v=>v?' checked':'';
+  return `<div class="card" id="cf" style="font-size:13px"><div class="cfg">
+  <label>Ações: nota global ≥<input id="ca" inputmode="decimal" value="${num(c.a,2)}"></label>
+  <label>ETFs: nota global ≥<input id="ce" inputmode="decimal" value="${num(c.e,2)}"></label>
+  <label>Valor total (€)<input id="ct" inputmode="decimal" value="${num(c.t,2)}"></label>
+  <label>% em ações<input id="cp" inputmode="decimal" value="${num(c.p,0)}"></label></div>
+  <label class="chk"><input type="checkbox" id="cs"${ck(c.s)}> Só com decisão de compra (inclui «esperar»)</label>
+  <label class="chk"><input type="checkbox" id="ch"${ck(c.h)}> Incluir os que já tenho</label>
+  <div id="cx" style="color:var(--mu);font-size:11px;margin-top:4px"></div></div><div id="cr"></div>`;
+}
+function calcCompra(){
+  const g=id=>document.getElementById(id),c={a:nPt(g('ca').value)??CMP0.a,e:nPt(g('ce').value)??CMP0.e,
+    t:nPt(g('ct').value)??CMP0.t,p:nPt(g('cp').value)??CMP0.p,s:g('cs').checked?1:0,h:g('ch').checked?1:0};
+  if(c.p>0&&c.p<=1)c.p*=100;
+  const c0=cmpCfg();
+  if(['a','e','t','p','s','h'].some(k=>c[k]!==c0[k])){c.ts=Date.now();try{localStorage.setItem('cmp_cfg',JSON.stringify(c));}catch(e){}}
+  const X=cmpX(),nq=new Set(X.nq),nd=new Set(X.nd),q=(document.getElementById('q').value||'').trim().toLowerCase();
+  const txtN=v=>v>=3.95?'= Compra forte':v>=3.5?'= Compra média':v>=3?'= Compra':'= abaixo de Compra (entram títulos que o painel não aconselha comprar)';
+  g('cx').textContent=`Ações ${txtN(c.a)} · ETFs ${txtN(c.e)} · ações ${eur(c.t*c.p/100)} · ETFs ${eur(c.t*(1-c.p/100))}`;
+  let h='';
+  for(const [nome,lista,mn,val] of [['Ações',D.a,c.a,c.t*c.p/100],['ETFs',D.e,c.e,c.t*(1-c.p/100)]]){
+    const esc_=[];
+    for(const d of lista){
+      let ng=d.ng??d.nt;const dc=d.dc||'';
+      if(dc.includes(': esperar'))ng=Math.max(ng??0,dc.startsWith('Compra forte')?3.95:dc.startsWith('Compra média')?3.5:3);
+      if(ng==null||Math.round(ng*100)/100<mn-1e-9)continue;
+      if(c.s&&!dc.startsWith('Compra'))continue;
+      if(d.x&&!c.h)continue;
+      esc_.push({...d,ngc:ng});}
+    esc_.sort((a,b)=>b.ngc-a.ngc);
+    const T=d=>String(d.t||'').toUpperCase(),fora=d=>nq.has(T(d))||nd.has(T(d)),soma=esc_.filter(d=>!fora(d)).reduce((s,d)=>s+d.ngc,0);
+    let tv=0;
+    const cards=esc_.filter(d=>!q||(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q)).map(d=>{
+      const f=fora(d),w=f||!soma?0:d.ngc/soma,v=w*val,pe=d.p!=null&&d.fx!=null?d.p*d.fx:null,na=pe&&v>0?v/pe:null;
+      return `<div class="card cmp${f?' fora':''}"><div class="top"><div class="nota" style="background:${corG(d.ngc)}">${num(d.ngc,2)}</div>
+      <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)}</span></div>
+      <div class="px">${eur(v)}<span>${num(w*100,1)}% do grupo</span></div></div>
+      <span class="dec" style="background:${corDecF(d)};${dc_(d)}">${esc(d.dc)}</span>
+      <div class="lv3"><div>Preço atual<b>${pr(d.p)} ${esc(d.m)}</b></div><div>Compra máxima<b class="cmx">${pr(d.tm)} <small>${pct(d.tmp)}</small></b></div>
+      <div>Nº de ações<b>${na==null?'–':num(na,2)}</b></div></div>
+      <div class="cbt"><button data-k="nq" data-t="${esc(T(d))}" class="${nq.has(T(d))?'on':''}">Não quero</button><button data-k="nd" data-t="${esc(T(d))}" class="${nd.has(T(d))?'on':''}">Não disponível</button></div></div>`;});
+    esc_.forEach(d=>{if(!fora(d)&&soma)tv+=d.ngc/soma*val;});
+    h+=`<h2 class="sec">${nome} (${esc_.filter(d=>!fora(d)).length}) · ${eur(tv)}</h2>`+(esc_.length?cards.join(''):
+      `<div class="card" style="color:var(--mu)">Nenhum título cumpre os critérios: os ${eur(val)} ficam por investir (baixa a nota mínima ou desliga «só com decisão de compra»).</div>`);
+  }
+  g('cr').innerHTML=h;
+}
+const dc_=d=>(d.dc||'').includes(': esperar')?'color:#5B2C83;font-weight:700':(d.dc||'').startsWith('Venda')?'font-weight:700':'';
+function ligarCompra(){
+  ['ca','ce','ct','cp'].forEach(id=>{const e=document.getElementById(id);e.addEventListener('input',calcCompra);
+    e.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();e.blur();}});});
+  ['cs','ch'].forEach(id=>document.getElementById(id).addEventListener('change',calcCompra));
+  document.getElementById('cr').addEventListener('click',ev=>{const b=ev.target.closest('button[data-k]');if(!b)return;
+    const X=cmpX(),k=b.dataset.k,t=b.dataset.t,s=new Set(X[k]);s.has(t)?s.delete(t):s.add(t);X[k]=[...s];X.ts=Date.now();
+    try{localStorage.setItem('cmp_x',JSON.stringify(X));}catch(e){}calcCompra();});
+  calcCompra();
+}
 // ---- separador Gráficos (os mesmos da folha Carteira), em SVG
 const CORES=['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac','#1f77b4','#8c564b'];
 const escH=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -5831,6 +5911,9 @@ function mostrar(){
   document.querySelector('.bar').style.display=aba==='G'?'none':'flex';
   {const o2=document.getElementById('o').value;document.getElementById('nmb').style.display=['bpm','ntp','bpg','ngp'].includes(o2)&&aba!=='G'?'flex':'none';}
   if(aba==='G'){el.innerHTML=graficos();return;}
+  if(aba==='C'){document.getElementById('o').style.display='none';document.getElementById('nmb').style.display='none';
+    if(!document.getElementById('cf')){el.innerHTML=compra();ligarCompra();}else calcCompra();return;}
+  document.getElementById('o').style.display='';
   if(aba==='X'){
     const a=prep(D.a.filter(d=>d.x)), e=prep(D.e.filter(d=>d.x));
     if(minAtivo())document.getElementById('nmc').textContent=(a.length+e.length)+' detido(s)';
@@ -6334,6 +6417,8 @@ def pagina_html(linhas, etfs, texto):
                        and isinstance(d.get("lp_eur"), (int, float)) else None),
                 "ds": 1 if d.get("desat") == 1 else 0,
                 "tm": num(d.get("teto")), "tmp": num(d.get("teto_pct")),
+                "fx": (1.0 if txt(d.get("moeda")) == "EUR" else num(d.get("fx_alt")) if txt(d.get("moeda_alt")) == "EUR"
+                       else None),
                 "cr": num(d.get("compra")), "crp": num(d.get("compra_pct")), "va": num(d.get("venda_alvo")),
                 "vap": num(d.get("venda_alvo_pct")), "vm": num(d.get("venda_min")), "vmp": num(d.get("venda_min_pct")), "vmc": num(d.get("venda_min_compra")),
                 "q": num(d.get("qual")), "s": num(d.get("saude_n")), "sd": txt(d.get("saude")) or None,
@@ -6347,6 +6432,17 @@ def pagina_html(linhas, etfs, texto):
     n_oc = sum(1 for d in list(linhas) + list(etfs) if txt(d.get("ticker")) and not vis(d))
     dados = {"at": f"{texto} · {TXT_VERSAO}" + (f" · {n_oc} escondidos pelo filtro do Excel" if n_oc else ""),
              "a": [item(d) for d in linhas if vis(d)], "e": [item(d) for d in etfs if vis(d)], "v": versao, "gh": BOTAO}
+    try:                                       # escolhas da folha Compra (valores por omissão do separador Compra)
+        cp_ = _ler_json(FICH_COMPRA, {})
+        if cp_:
+            dados["cmp"] = {"a": cp_.get("min_a"), "e": cp_.get("min_e"), "t": cp_.get("total"),
+                            "p": round(100 * cp_["pct_a"]) if isinstance(cp_.get("pct_a"), (int, float)) else None,
+                            "s": 1 if cp_.get("so_compra") else 0, "h": 1 if cp_.get("detidos") else 0,
+                            "nq": cp_.get("excluir") or [], "nd": cp_.get("indisp") or [],
+                            "ts": cp_.get("ts") or int(os.path.getmtime(FICH_COMPRA) * 1000)}
+            dados["cmp"] = {k: v for k, v in dados["cmp"].items() if v is not None}
+    except Exception:
+        pass
     js = json.dumps(dados, ensure_ascii=False).replace("</", "<\\/")
     return HTML_TPL.replace("__DATA__", js), versao
 
@@ -7712,7 +7808,8 @@ def calcular_compra():
         linhas.append([""] * len(CMP_CAB))
     for a in avisos:
         linhas.append(["", "", a] + [""] * (len(CMP_CAB) - 3))
-    _gravar_json(FICH_COMPRA, {**p, "excluir": sorted(excluir), "indisp": sorted(indisp), "linhas2": linhas[:CMP_MAX]})
+    _gravar_json(FICH_COMPRA, {**p, "excluir": sorted(excluir), "indisp": sorted(indisp), "linhas2": linhas[:CMP_MAX],
+                               "ts": int(time.time() * 1000)})          # a app usa as escolhas mais recentes
     vazio = [[None] * len(CMP_CAB) for _ in range(CMP_MAX)]
     for i, lin in enumerate(linhas[:CMP_MAX]):
         vazio[i] = ([None if v == "" else v for v in lin] + [None] * len(CMP_CAB))[:len(CMP_CAB)]
