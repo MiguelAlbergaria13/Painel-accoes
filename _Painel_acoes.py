@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V130", "21/11/2026"
+VERSAO, DATA_VERSAO = "V132", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -2030,7 +2030,7 @@ def pontuar(d, preco):
     else:
         p = 2
     abaixo200 = False
-    if p >= 3 and p200 < 0 and not so_tend and not etf_mom:
+    if p >= 3 and p200 < 0 and (etf_mom or not so_tend):      # V132: também nos ETFs
         # V130: compra só com o preço acima da média 200 (como quando só há a tendência). Barata face aos analistas
         # / valor justo, mas a cair abaixo da média 200: «Compra …: esperar» em vez de comprar já a meio da queda
         p, abaixo200 = 2, True
@@ -7517,10 +7517,10 @@ def folha_compra(wb):
                 "das folhas Ações/ETFs; os preços estão na moeda de cada título. Nº de ações = valor ÷ preço atual em "
                 "euros (aproximado). Para tirar um título, põe x na coluna A («Não quero») ou B («Não disponível», p. "
                 "ex. a corretora não o tem): fica riscado, com 0 €, e os valores dos outros do mesmo grupo recalculam-se "
-                "logo (também ao mudar o valor total ou a % em ações). Os x ficam guardados para os próximos cálculos. No fim, a "
-                "LISTA DE ESPERA (a lilás): títulos bons e baratos cujo momento ainda não é de compra (sinal < 3); a "
-                "decisão diz o que esperar (que estabilize acima da média de 50 dias e/ou que o preço chegue à compra "
-                "máxima). Não entram nos valores.")
+                "logo (também ao mudar o valor total ou a % em ações). Os x ficam guardados para os próximos cálculos. "
+                "Decisão a lilás («Compra …: esperar»): título bom e barato cujo momento ainda não é de compra; entra "
+                "como os outros (com a nota do nível da decisão) e a decisão diz o que esperar (preço acima da média 200 "
+                "ou 50 dias e/ou até à compra máxima): usa a ordem limite ou põe x em «Não quero» se preferires esperar.")
     ws["C2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["C2"].font = Font(italic=True, size=9, color="595959")
     ws.merge_cells("C2:N2")
@@ -7591,13 +7591,24 @@ def folha_compra(wb):
     ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(
         formula=[f'OR(LEFT(${CT}{a0},5)="Total",LEFT(${CT}{a0},5)="Lista")'], font=Font(bold=True),
         fill=PatternFill("solid", bgColor="DDEBF7")))
-    ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(          # títulos em espera: lilás
-        formula=[f'ISNUMBER(SEARCH("(espera)",${CTP}{a0}))'], fill=PatternFill("solid", bgColor=COR_ESPERA)))
+    # decisão: as mesmas cores das folhas Ações / ETFs
+    dcl = f"${CDC}{a0}"
+    for f_, cor, fnt in ((f'ISNUMBER(SEARCH(": esperar",{dcl}))', COR_ESPERA, Font(color="5B2C83", bold=True)),
+                         (f'ISNUMBER(SEARCH("saúde frágil",{dcl}))', "F8CBAD", Font(color="C00000", bold=True)),
+                         (f'LEFT({dcl},5)="Venda"', "F8696B", Font(bold=True)),
+                         (f'ISNUMBER(SEARCH("Longo Prazo",{dcl}))', "F4B183", None),
+                         (f'LEFT({dcl},6)="Manter"', "FFEB9C", None)):
+        ws.conditional_formatting.add(f"{CDC}{a0}:{CDC}{an}", FR(formula=[f_], fill=PatternFill("solid", bgColor=cor),
+                                                                font=fnt, stopIfTrue=True))
+    for lim, cor in ((3.95, "63BE7B"), (3.5, "A9D18E"), (3.0, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
+        ws.conditional_formatting.add(f"{CDC}{a0}:{CDC}{an}", FR(
+            formula=[f'AND({dcl}<>"",ISNUMBER(${CNT}{a0}),${CNT}{a0}>={lim})'], fill=PatternFill("solid", bgColor=cor),
+            font=Font(bold=lim >= 3.95), stopIfTrue=True))
     res = _ler_json(FICH_COMPRA, {}).get("linhas2") or []
     for i, lin in enumerate(res[:CMP_MAX]):
         for j, v in enumerate(lin, 1):
             ws.cell(CMP_L0 + i, j, v)
-    ws.freeze_panes = f"A{CMP_L0}"
+    ws.freeze_panes = None                         # sem painéis fixos
 
 
 def _num_ou(v, padrao=None):
@@ -7649,9 +7660,9 @@ def calcular_compra():
         for d in grupo:
             ng = d.get("nota_geral") if isinstance(d.get("nota_geral"), (int, float)) else d.get("nota")
             dc_ = txt(d.get("decisao"))
-            if ": esperar" in dc_ and isinstance(ng, (int, float)):   # boa e barata, mas ainda não é altura: lista de espera
-                espera_l.append((ng, d, nome_g))                       # (a nota de hoje está baixa por causa do momento)
-                continue
+            if ": esperar" in dc_:                    # boa e barata, mas ainda não é altura: a nota de hoje está baixa
+                nv_ = 3.95 if dc_.startswith(NIVEIS[5]) else 3.5 if dc_.startswith(NIVEIS[4]) else 3.0   # por causa do
+                ng = max(ng if isinstance(ng, (int, float)) else 0, nv_)                                   # momento: a do nível
             if not isinstance(ng, (int, float)) or round(ng, 2) < mn - 1e-9:
                 continue
             if p["so_compra"] and not dc_.startswith("Compra"):
