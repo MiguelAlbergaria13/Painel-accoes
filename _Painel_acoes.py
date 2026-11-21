@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V140", "21/11/2026"
+VERSAO, DATA_VERSAO = "V142", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -3483,6 +3483,7 @@ def compra_espera(d):
     except Exception:
         return None
     ng, nt = d2.get("nota_geral"), d2.get("nota")
+    n_conf = ng if isinstance(ng, (int, float)) and isinstance(d2.get("nivel_preco"), (int, float)) else nt
     if isinstance(ng, (int, float)) and isinstance(d2.get("nivel_preco"), (int, float)):
         nivel = 5 if ng >= GERAL_LIM[0] else 4 if ng >= GERAL_LIM[1] else 3 if ng >= GERAL_LIM[2] else None
     elif isinstance(nt, (int, float)):
@@ -3502,7 +3503,8 @@ def compra_espera(d):
         falta.append("preço até à compra máxima")
     if not falta:
         falta.append("confirmar a subida (sinal ≥ 3)")
-    return f"{NIVEIS[nivel]}: esperar ({'; '.join(falta)})"
+    pre = f"nota {n_conf:.2f} ao confirmar; ".replace(".", ",") if isinstance(n_conf, (int, float)) else ""
+    return f"{NIVEIS[nivel]}: esperar ({pre}{'; '.join(falta)})"
 
 
 def decisao_global(d):
@@ -5764,7 +5766,7 @@ function cartao(d){
   return h+'</div></div>';
 }
 // ---- separador Compra (como a folha Compra do Excel): quanto investir em cada título
-const CMP0={a:3.5,e:3.5,t:1000,p:60,s:1,h:1,vq:1,vd:1,vn:0};
+const CMP0={a:3.5,e:3.5,t:1000,p:60,s:1,h:1,vq:1,vd:1,vn:1};
 // valem sempre as escolhas guardadas mais recentes: as do telemóvel ou as da folha Compra (no último ▶ CALCULAR COMPRA)
 const tsX=D.cmp&&D.cmp.ts||0;
 const cmpCfg=()=>{let c=null;try{c=JSON.parse(localStorage.getItem('cmp_cfg')||'null');}catch(e){}
@@ -5791,7 +5793,7 @@ function compra(){
   <div class="chk"><label><input type="checkbox" id="cvq"${ck(c.vq)}> Mostrar os «Não quero»</label></div>
   <div class="chk"><label><input type="checkbox" id="cvd"${ck(c.vd)}> Mostrar os «Não disponível»</label></div>
   <div class="chk"><label><input type="checkbox" id="cvn"${ck(c.vn)}> Mostrar títulos com compra nula</label><button class="inf" data-i="i3">i</button></div>
-  <div class="infx" id="i3">Mostra, no fim de cada grupo e a cinzento, os títulos que ficam com 0 € por não cumprirem os critérios, com o motivo (nota global abaixo do mínimo, decisão que não é de compra, ou já o tens).</div>
+  <div class="infx" id="i3">Títulos que ficam com 0% do grupo (0 €): os marcados «Não quero» ou «Não disponível». Desligado: nenhum deles aparece. Ligado: aparecem os escolhidos nos dois quadrados de cima.</div>
   <div id="cx" style="color:var(--mu);font-size:11px;margin-top:4px"></div></div><div id="cr"></div>`;
 }
 function calcCompra(){
@@ -5807,19 +5809,20 @@ function calcCompra(){
   g('cx').textContent=`Ações ${txtN(c.a,LA)} · ETFs ${txtN(c.e,LE)} · ações ${eur(c.t*c.p/100)} · ETFs ${eur(c.t*(1-c.p/100))}`;
   let h='';
   for(const [nome,lista,mn,val] of [['Ações',D.a,c.a,c.t*c.p/100],['ETFs',D.e,c.e,c.t*(1-c.p/100)]]){
-    const esc_=[],nulos=[];
+    const esc_=[];
     for(const d of lista){
       let ng=d.ng??d.nt;const dc=d.dc||'';
       const L=d.np!=null?LA:LE;
-      if(dc.includes(': esperar'))ng=Math.max(ng??0,dc.startsWith('Compra forte')?L[0]:dc.startsWith('Compra média')?L[1]:L[2]);
-      const mot=ng==null?'sem nota':Math.round(ng*100)/100<mn-1e-9?`nota global abaixo de ${num(mn,2)}`:
-        (c.s&&!dc.startsWith('Compra'))?'decisão não é de compra':(d.x&&!c.h)?'já o tens (★)':null;
-      if(mot){nulos.push({...d,ngc:ng,mot});continue;}
+      if(dc.includes(': esperar')){const m=dc.match(/nota (\d+,\d+) ao confirmar/);
+        ng=Math.max(ng??0,dc.startsWith('Compra forte')?L[0]:dc.startsWith('Compra média')?L[1]:L[2],m?+m[1].replace(',','.'):0);}
+      if(ng==null||Math.round(ng*100)/100<mn-1e-9)continue;
+      if(c.s&&!dc.startsWith('Compra'))continue;
+      if(d.x&&!c.h)continue;
       esc_.push({...d,ngc:ng});}
     esc_.sort((a,b)=>b.ngc-a.ngc);
     const T=d=>String(d.t||'').toUpperCase(),fora=d=>nq.has(T(d))||nd.has(T(d)),soma=esc_.filter(d=>!fora(d)).reduce((s,d)=>s+d.ngc,0);
     let tv=0;
-    const vis=d=>(c.vq||!nq.has(T(d)))&&(c.vd||!nd.has(T(d)));     // esconder «não quero» / «não disponível»
+    const vis=d=>!fora(d)||(c.vn&&(c.vq||!nq.has(T(d)))&&(c.vd||!nd.has(T(d))));   // compra nula (0 €): esconder?
     const cards=esc_.filter(d=>vis(d)&&(!q||(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q))).map(d=>{
       const f=fora(d),w=f||!soma?0:d.ngc/soma,v=w*val,pe=d.p!=null&&d.fx!=null?d.p*d.fx:null,na=pe&&v>0?v/pe:null;
       return `<div class="card cmp${f?' fora':''}"><div class="top"><div class="nota" style="background:${corT(d)}">${num(d.ngc,2)}</div>
@@ -5833,11 +5836,6 @@ function calcCompra(){
     const nesc=esc_.filter(d=>!vis(d)).length;
     h+=`<h2 class="sec">${nome} (${esc_.filter(d=>!fora(d)).length}) · ${eur(tv)}${nesc?` <span style="font-size:11px;font-weight:400;color:var(--mu)">· ${nesc} escondido${nesc>1?'s':''}</span>`:''}</h2>`+(esc_.length?cards.join(''):
       `<div class="card" style="color:var(--mu)">Nenhum título cumpre os critérios: os ${eur(val)} ficam por investir (baixa a nota mínima ou desliga «só com decisão de compra»).</div>`);
-    const nl=nulos.filter(d=>!q||(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q)).sort((a,b)=>(b.ngc??-9)-(a.ngc??-9));
-    if(c.vn&&nl.length) h+=`<div style="font-size:12px;color:var(--mu);margin:10px 2px 2px">${nome} com compra nula (${nl.length})</div>`+nl.map(d=>
-      `<div class="card cmp nula"><div class="top"><div class="nota" style="background:${d.ngc==null?'#d0d3d8':corT(d)}">${d.ngc==null?'–':num(d.ngc,2)}</div>
-      <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/chart/${encodeURIComponent(d.t)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${esc(d.t)} · ${esc(d.mot)}</span></div>
-      <div class="px">${eur(0)}</div></div><span class="dec" style="background:${corDecF(d)};${dc_(d)}">${esc(d.dc)}</span></div>`).join('');
   }
   g('cr').innerHTML=h;
 }
@@ -7646,7 +7644,7 @@ def folha_compra(wb):
                 "ex. a corretora não o tem): fica riscado, com 0 €, e os valores dos outros do mesmo grupo recalculam-se "
                 "logo (também ao mudar o valor total ou a % em ações). Os x ficam guardados para os próximos cálculos. "
                 "Decisão a lilás («Compra …: esperar»): título bom e barato cujo momento ainda não é de compra; entra "
-                "como os outros (com a nota do nível da decisão) e a decisão diz o que esperar (preço acima da média 200 "
+                "como os outros (com a «nota ao confirmar» que a decisão mostra) e a decisão diz o que esperar (preço acima da média 200 "
                 "ou 50 dias e/ou até à compra máxima): usa a ordem limite ou põe x em «Não quero» se preferires esperar.")
     ws["C2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["C2"].font = Font(italic=True, size=9, color="595959")
@@ -7800,6 +7798,8 @@ def calcular_compra():
             if ": esperar" in dc_:                    # boa e barata, mas ainda não é altura: a nota de hoje está baixa
                 lm_ = LIM_ACOES if isinstance(d.get("nivel_preco"), (int, float)) else LIM_ETFS   # por causa do momento:
                 nv_ = lm_[0] if dc_.startswith(NIVEIS[5]) else lm_[1] if dc_.startswith(NIVEIS[4]) else lm_[2]   # a do nível
+                m_ = re.search(r"nota (\d+,\d+) ao confirmar", dc_)
+                nv_ = max(nv_, float(m_.group(1).replace(",", "."))) if m_ else nv_
                 ng = max(ng if isinstance(ng, (int, float)) else 0, nv_)
             if not isinstance(ng, (int, float)) or round(ng, 2) < mn - 1e-9:
                 continue
