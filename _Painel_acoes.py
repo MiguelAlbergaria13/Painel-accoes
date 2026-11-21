@@ -317,6 +317,7 @@ COLS += [("ppo", "PPO 12/26 (%)", 10, "pct", "ind"), ("ppo_sinal", "PPO: linha d
          ("r2_1a", "Regularidade da reta de 1 ano (R², 0 a 1)", 7, "num1", "ind"),
          ("inc6m", "Inclinação da reta de 6 meses, cotações diárias (% por ano)", 9, "pct", "ind"),
          ("r2_6m", "Regularidade da reta de 6 meses (R², 0 a 1)", 7, "num1", "ind"),
+         ("mm50", "Média 50 dias (entrada: o preço acima dela = estabilizou)", 10, "preco", "ind"),
          ("vol1a", "Volatilidade do último ano (desvio-padrão anual das variações diárias) (%)", 9, "pct", "ind"),
          ("rec_media", "Recomendação média dos analistas (1 compra forte … 5 venda)", 7, "num1", "ind"),
          ("fator_tend", "Fator de tendência (multiplica a nota geral)", 7, "num1", "ind"),
@@ -340,7 +341,7 @@ for _c in COLS:
 COLS = _cols + [("moeda_alt", "Moeda alternativa", 6, "txt", "ind"),
                 ("fx_alt", "Câmbio: moeda da cotação -> alternativa", 9, "geral", "ind"),
                 ("desat", "Não atualizado na última atualização parcial (1)", 5, "geral", "ind")]
-OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "val_sempre", "val10", "val5", "val3", "val1", "inc1a", "r2_1a", "inc6m", "r2_6m", "vol1a", "rec_media", "fator_tend", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab",
+OCULTAS = ("moeda_alt", "fx_alt", "desat", "corr", "lp10", "lp5", "val_sempre", "val10", "val5", "val3", "val1", "inc1a", "r2_1a", "inc6m", "r2_6m", "mm50", "vol1a", "rec_media", "fator_tend", "so_caro", "nota_sc", "pe_fwd", "etf_caro", "pe_hab",
            "compra", "compra_alt", "compra_pct")     # compra razoável (trigger): já não se usa; fica só a compra máxima   # corr: corretora (escondida por agora; os valores ficam)
 # larguras mais estreitas e letra 9 em algumas colunas
 _LARG = {"preco_hora": 10, "pont": 7, "etf_acoes": 7, "etf_desc": 24, "etf_comp": 30, "qual": 6, "saude_n": 6,
@@ -600,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V121", "21/11/2026"
+VERSAO, DATA_VERSAO = "V124", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1162,6 +1163,9 @@ def construir(linhas, atualizado, etfs=(), criterios=None, acrescentados=(), est
         folha_comparar(wb)
     except Exception as e:
         print("   aviso: folha Comparar notas não criada:", e)
+    for nome in ("Acrescentados", FOLHA_PESOS):       # estas duas no fim (são pouco usadas)
+        if nome in wb.sheetnames:
+            wb.move_sheet(nome, offset=len(wb.sheetnames) - 1 - wb.sheetnames.index(nome))
     for ws in wb.worksheets:
         marcar_versao(ws)
     return wb
@@ -1389,6 +1393,9 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                        if j - 1 in vertical else Alignment(horizontal="center", vertical="center", wrap_text=True))
         ws.column_dimensions[let(j)].width = larguras[j - 1]
     ws.column_dimensions["A"].width = 3                 # coluna «Atualizar (x)»: estreita (texto ao alto)
+    for k_, w_ in (("valor_eur", 10), ("bolsa", 12)):    # mais estreitas
+        if k_ in COL:
+            ws.column_dimensions[let(COL[k_])].width = w_
     # altura do cabeçalho: chega para o texto mais comprido (letra 8: ≈ 1,3 caracteres por unidade de largura na
     # horizontal; ao alto ≈ 4,4 pontos por carácter, com as linhas que couberem na largura)
     linhas_cab = max([math.ceil(len(h) / max((w - 1) * 1.3, 1)) for j, (h, w) in enumerate(zip(cabs, larguras))
@@ -1429,6 +1436,8 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 c.number_format = '"€"* #,##0.00'
                 if k == "valor_eur":
                     c.font = Font(bold=True)
+            if k in ("bolsa", "horario"):                 # bolsa e horário: letra 9
+                c.font = Font(size=9)
             elif fmt == "nota":
                 c.number_format = "0.0"
                 c.alignment = Alignment(horizontal="center")
@@ -1503,6 +1512,9 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                           (f"${bl}{L0+1}>1.2", "FCE4D6", "1C1E21")):
         ws.conditional_formatting.add(faixa("beta"), FormulaRule(formula=[f"AND(ISNUMBER(${bl}{L0+1}),{cond})"],
                                       fill=PatternFill("solid", bgColor=cor), font=Font(color=fc), stopIfTrue=True))
+    ws.conditional_formatting.add(faixa("decisao"), FormulaRule(       # compra em espera: lilás (o azul é «cara»)
+        formula=[f'ISNUMBER(SEARCH(": esperar",{dc}{L0+1}))'], fill=PatternFill("solid", bgColor=COR_ESPERA),
+        font=Font(color="5B2C83", bold=True), stopIfTrue=True))
     ws.conditional_formatting.add(faixa("decisao"), FormulaRule(
         formula=[f'ISNUMBER(SEARCH("saúde frágil",{dc}{L0+1}))'], fill=PatternFill("solid", bgColor="F8CBAD"),
         font=Font(color="C00000", bold=True), stopIfTrue=True))
@@ -2121,6 +2133,7 @@ def pontuar(d, preco):
     d["pont"], d["coment"] = p, " · ".join(c) or None
     d["_vprox"], d["_cprox"] = venda_prox, compra_prox
     d["_vigiar"] = queda_vigiar
+    d["_preco_sinal"] = preco
     d["_venda_tipo"] = ("queda brusca" if rede and preco < rede else "tendência de descida") if p == 1 else None
     d["nota"] = nota_global(d)
     d["decisao"] = decisao_global(d)
@@ -2943,6 +2956,8 @@ def inclin_recentes(cl):
     cl = cl.dropna()
     cl = cl[cl > 0]
     import numpy as np
+    if len(cl) >= 50:
+        out["mm50"] = float(cl.iloc[-50:].mean())
     for k, r2k, n in (("inc1a", "r2_1a", 252), ("inc6m", "r2_6m", 126)):
         if len(cl) >= int(n * 0.9):
             out[k], out[r2k] = reta_r2(cl.iloc[-n:].to_numpy(dtype=float), 252)
@@ -3440,7 +3455,40 @@ def sobre_compra(d):
     return t + (": realizar ganho?" if r > 0 else ": cortar a perda?")
 
 
-GERAL_LIM = (3.95, 3.5, 3.0)     # nota global: compra forte / média / compra (a média com o preço puxa para o meio)
+GERAL_LIM = (3.95, 3.5, 3.0)
+COR_ESPERA = "D9C3E9"          # «Compra …: esperar (…)»: lilás (o azul já é «cara»)     # nota global: compra forte / média / compra (a média com o preço puxa para o meio)
+
+
+def compra_espera(d):
+    """«Compra forte/média/Compra: esperar (…)» quando a empresa e o preço valem a compra (nota global calculada com o
+    sinal neutro, 3) mas o momento ainda não (sinal < 3). Diz o que esperar: que estabilize (preço acima da média de
+    50 dias) e/ou que chegue à compra máxima (ordem limite)."""
+    if d.get("_espera_calc"):
+        return None
+    d2 = dict(d, pont=3.0, _espera_calc=True)
+    try:
+        nota_global(d2)
+    except Exception:
+        return None
+    ng, nt = d2.get("nota_geral"), d2.get("nota")
+    if isinstance(ng, (int, float)) and isinstance(d2.get("nivel_preco"), (int, float)):
+        nivel = 5 if ng >= GERAL_LIM[0] else 4 if ng >= GERAL_LIM[1] else 3 if ng >= GERAL_LIM[2] else None
+    elif isinstance(nt, (int, float)):
+        nivel = 5 if nt >= 4.5 else 4 if nt >= 3.75 else 3 if nt >= 2.75 else None
+    else:
+        nivel = None
+    if nivel is None:
+        return None
+    pr = d.get("preco") if isinstance(d.get("preco"), (int, float)) else d.get("_preco_sinal")
+    m50, teto = d.get("mm50"), d.get("teto")
+    falta = []
+    if isinstance(pr, (int, float)) and isinstance(m50, (int, float)) and pr < m50:
+        falta.append("estabilizar: preço acima da média 50 dias")
+    if isinstance(pr, (int, float)) and isinstance(teto, (int, float)) and teto > 0 and pr > teto:
+        falta.append("preço até à compra máxima")
+    if not falta:
+        falta.append("confirmar a subida (sinal ≥ 3)")
+    return f"{NIVEIS[nivel]}: esperar ({'; '.join(falta)})"
 
 
 def decisao_global(d):
@@ -3451,6 +3499,10 @@ def decisao_global(d):
         return None
     alerta = txt(d.get("saude")).startswith("ALERTA")
     sobre = sobre_compra(d)
+    espera = compra_espera(d) if p < 3 and not alerta else None    # boa e barata, mas ainda não é altura
+    tem = e_detido(d.get("det")) or bool(d.get("qtd"))
+    if espera and not (tem and (p == 1 or d.get("_vigiar"))):      # nos detidos, a venda/vigiar tem prioridade
+        return espera
     if p == 1:
         return NIVEIS[1] + f" ({d.get('_venda_tipo') or 'tendência de descida'})" + sobre
     if d.get("_vigiar") and p == 2:
@@ -4894,7 +4946,19 @@ class Excel:
 
     def ops(self, ops, guardar=False):
         ops = [{**o, "folha": NOME_PROC[o["folha"]]} if isinstance(o.get("folha"), int) and o.get("folha") in NOME_PROC
-               else o for o in ops]               # Procurar ações/ETFs pelo nome (a folha Compra vem antes delas)
+               else o for o in ops]               # Proc ações/ETFs pelo nome (a folha Compra vem antes delas)
+        if any(o.get("folha") in NOME_PROC.values() for o in ops) and not getattr(self, "_proc_ok", False):
+            self._proc_ok = True                  # livro ainda com os nomes antigos (até à V122)? experimenta uma vez
+            modo0 = self.modo
+            try:
+                self.ops([{"op": "ler", "folha": NOME_PROC[FOLHA_PROC], "rng": "A1"}])
+            except BaseException:                 # (a falha chega como SystemExit: o ficheiro está aberto no Excel)
+                self._proc_ant = True
+            finally:
+                self.modo = modo0
+        if getattr(self, "_proc_ant", False):
+            inv = {v: NOME_PROC_ANT[k] for k, v in NOME_PROC.items()}
+            ops = [{**o, "folha": inv.get(o.get("folha"), o.get("folha"))} for o in ops]
         if self.modo in (None, "pywin32"):
             try:
                 r = _ops_pywin32(self.livro, ops, guardar)
@@ -5647,7 +5711,7 @@ const eur=v=>'€ '+num(v,2);
 const esc=s=>(s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function cartao(d){
   const dc=d.dc||'';
-  const corDec=d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.pt!=null&&d.pt<3)?'#FFEB9C':(d.ng!=null&&d.np!=null?corG(d.ng):cor(d.nt));
+  const corDec=d.pt===1?'#F8696B':d.pt===2.5?'#F4B183':(d.dc||'').includes(': esperar')?'#D9C3E9':(d.pt!=null&&d.pt<3)?'#FFEB9C':(d.ng!=null&&d.np!=null?corG(d.ng):cor(d.nt));
   const azul=v=>v<=1.25?['#1F4E79','#fff']:v<=1.5?['#2F75B5','#fff']:v<=1.75?['#9BC2E6','#1F4E79']:['#BDD7EE','#1F4E79'];
   const NG=d.ng!=null?d.ng:d.nt, corNG=v=>d.ng!=null&&d.np!=null?corG(v):cor(v);   // nota global (geral + preço)
   const [cn,fn]=d.ca?azul(d.np):[corNG(NG),'inherit'];
@@ -6303,7 +6367,8 @@ L_TAB = 12            # linha do cabeçalho da tabela das folhas Procurar
 C_ESTADO = "C9"       # estado das folhas Procurar
 # Folha 3 = Procurar ações (por nome/ticker, ou as mais significativas de uma região); folha 4 = Procurar ETFs
 FOLHA_PROC, FOLHA_PROC_ETF = 3, 4
-NOME_PROC = {FOLHA_PROC: "Procurar ações", FOLHA_PROC_ETF: "Procurar ETFs"}
+NOME_PROC = {FOLHA_PROC: "Proc ações", FOLHA_PROC_ETF: "Proc ETFs"}
+NOME_PROC_ANT = {FOLHA_PROC: "Procurar ações", FOLHA_PROC_ETF: "Procurar ETFs"}     # nomes até à V122
 P_TXT, P_CRIT, P_REG, P_N = "C3", "C4", "C5", "C6"
 MAXP = 500            # nº máximo de resultados
 CAB_P = ["x", "Empresa / ETF", "Tipo", "Código", "Ticker Yahoo", "Bolsa", "Capitalização (mil M USD)",
@@ -7443,7 +7508,10 @@ def folha_compra(wb):
                 "das folhas Ações/ETFs; os preços estão na moeda de cada título. Nº de ações = valor ÷ preço atual em "
                 "euros (aproximado). Para tirar um título, põe x na coluna A («Não quero») ou B («Não disponível», p. "
                 "ex. a corretora não o tem): fica riscado, com 0 €, e os valores dos outros do mesmo grupo recalculam-se "
-                "logo (também ao mudar o valor total ou a % em ações). Os x ficam guardados para os próximos cálculos.")
+                "logo (também ao mudar o valor total ou a % em ações). Os x ficam guardados para os próximos cálculos. No fim, a "
+                "LISTA DE ESPERA (a lilás): títulos bons e baratos cujo momento ainda não é de compra (sinal < 3); a "
+                "decisão diz o que esperar (que estabilize acima da média de 50 dias e/ou que o preço chegue à compra "
+                "máxima). Não entram nos valores.")
     ws["C2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["C2"].font = Font(italic=True, size=9, color="595959")
     ws.merge_cells("C2:N2")
@@ -7490,6 +7558,7 @@ def folha_compra(wb):
             ws[f"{col}{r}"].number_format = fm
         for col in (CQ, CND, CTEM):
             ws[f"{col}{r}"].alignment = Alignment(horizontal="center")
+        ws[f"{CMX}{r}"].font = Font(bold=True, size=12)          # compra máxima (ordem limite) em destaque
     for col, w in zip("ABCDEFGHIJKLMN", (5, 8, 34, 11, 7, 8, 30, 12, 12, 10, 9, 13, 10, 7)):
         ws.column_dimensions[col].width = w
     ws.column_dimensions[CFX].hidden = True
@@ -7511,7 +7580,10 @@ def folha_compra(wb):
         ws.conditional_formatting.add(f"{CNT}{a0}:{CNT}{an}", FR(
             formula=[f"AND(ISNUMBER(${CNT}{a0}),${CNT}{a0}>={lim})"], fill=PatternFill("solid", bgColor=cor), stopIfTrue=True))
     ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(
-        formula=[f'LEFT(${CT}{a0},5)="Total"'], font=Font(bold=True), fill=PatternFill("solid", bgColor="DDEBF7")))
+        formula=[f'OR(LEFT(${CT}{a0},5)="Total",LEFT(${CT}{a0},5)="Lista")'], font=Font(bold=True),
+        fill=PatternFill("solid", bgColor="DDEBF7")))
+    ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(          # títulos em espera: lilás
+        formula=[f'ISNUMBER(SEARCH("(espera)",${CTP}{a0}))'], fill=PatternFill("solid", bgColor=COR_ESPERA)))
     res = _ler_json(FICH_COMPRA, {}).get("linhas2") or []
     for i, lin in enumerate(res[:CMP_MAX]):
         for j, v in enumerate(lin, 1):
@@ -7559,7 +7631,7 @@ def calcular_compra():
     ultima = get_column_letter(len(COLS))
     r = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
     acoes, etfs = (list(linhas_por_cabecalho(tab, i)) for i, tab in zip((1, 2), r))
-    linhas, avisos = [], []
+    linhas, avisos, espera_l = [], [], []
     L1_, LN_ = CMP_L0, CMP_L0 + CMP_MAX - 1
     R = lambda c, fim=LN_: f"${c}${L1_}:${c}${fim}"
     for nome_g, grupo, mn, valor in (("Ações", acoes, p["min_a"], p["total"] * p["pct_a"]),
@@ -7567,9 +7639,13 @@ def calcular_compra():
         esc = []
         for d in grupo:
             ng = d.get("nota_geral") if isinstance(d.get("nota_geral"), (int, float)) else d.get("nota")
+            dc_ = txt(d.get("decisao"))
+            if ": esperar" in dc_ and isinstance(ng, (int, float)):   # boa e barata, mas ainda não é altura: lista de espera
+                espera_l.append((ng, d, nome_g))                       # (a nota de hoje está baixa por causa do momento)
+                continue
             if not isinstance(ng, (int, float)) or round(ng, 2) < mn - 1e-9:
                 continue
-            if p["so_compra"] and not txt(d.get("decisao")).startswith("Compra"):
+            if p["so_compra"] and not dc_.startswith("Compra"):
                 continue
             tem = e_detido(d.get("det")) or bool(d.get("qtd"))
             if tem and not p["detidos"]:
@@ -7602,6 +7678,18 @@ def calcular_compra():
         lin_t[11] = f'=SUMIFS({R(CVL, r_ - 1)},{R(CTP, r_ - 1)},"{tipo}")'
         linhas.append(lin_t)
         linhas.append([""] * len(CMP_CAB))
+    if espera_l:                                  # lista de espera (não entra nos valores)
+        lin_t = [""] * len(CMP_CAB)
+        lin_t[2] = "Lista de espera: boas e baratas, mas ainda não é altura (comprar quando cumprir o que está na decisão)"
+        linhas.append(lin_t)
+        for ng, d, nome_g in sorted(espera_l, key=lambda x: -x[0]):
+            pr = d.get("preco")
+            tk = txt(d.get("ticker"))
+            linhas.append(["", "x" if tk.upper() in indisp else "", txt(d.get("nome")) or tk, tk,
+                           ("Ação" if nome_g == "Ações" else "ETF") + " (espera)", round(ng, 2), txt(d.get("decisao")), pr,
+                           d.get("teto"), d.get("teto_pct"), None, None, None,
+                           "★" if (e_detido(d.get("det")) or bool(d.get("qtd"))) else "", None, txt(d.get("moeda"))])
+        linhas.append([""] * len(CMP_CAB))
     for a in avisos:
         linhas.append(["", "", a] + [""] * (len(CMP_CAB) - 3))
     _gravar_json(FICH_COMPRA, {**p, "excluir": sorted(excluir), "indisp": sorted(indisp), "linhas2": linhas[:CMP_MAX]})
@@ -7621,14 +7709,19 @@ def calcular_compra():
 
 FOLHA_HIS = "Histórico"
 FICH_HIS = os.path.join(PASTA, BASE + "_historico.json")
-HIS_N, HIS_L0, HIS_MAX = 10, 40, 260          # títulos; 1.ª linha dos dados (colunas escondidas); dias no máximo
+HIS_N, HIS_L0, HIS_MAX = 10, 40, 430          # títulos; 1.ª linha dos dados (colunas escondidas); pontos no máximo
+HIS_ANOS_MAX = 5
+HIS_SER = (("compra", "Compra (forte, média ou compra)", "2E8B3E"), ("esperar", "Compra, mas esperar", "8E6BBF"),
+           ("manter", "Manter", "A6A6A6"), ("venda", "Venda", "E06666"))           # séries dos gráficos (3 cores)
 HIS_COL0 = 27                                  # coluna AA: datas; depois 5 séries por título
-HIS_CLASSES = (("forte", "Compra forte", "1E7B34"), ("media", "Compra média", "63BE7B"), ("compra", "Compra", "A9D18E"),
+HIS_CLASSES = (("esperar", "Compra, mas esperar", "8E6BBF"), ("forte", "Compra forte", "1E7B34"), ("media", "Compra média", "63BE7B"), ("compra", "Compra", "A9D18E"),
                ("manter", "Manter", "A6A6A6"), ("venda", "Venda", "E06666"))
 
 
 def _his_classe(dec):
     dec = txt(dec)
+    if ": esperar" in dec:
+        return "esperar"
     if dec.startswith("Venda"):
         return "venda"
     if dec.startswith("Compra forte"):
@@ -7655,19 +7748,27 @@ def folha_historico(wb, linhas=(), etfs=()):
                 "dos EUA, os relatórios anuais já publicados na SEC (qualidade, saúde, PER, FCF, valor justo e nível de "
                 "preço). Os analistas não têm histórico: contam como o sinal. Fora dos EUA, sem nível de preço, a nota "
                 "global é a nota geral e os limites são os da nota geral (4,5 / 3,75 / 2,75), por isso a compra forte é "
-                "rara. Os gráficos mostram o preço, com a cor da decisão de cada dia.")
+                "rara. Um ponto a cada 3 a 5 dias de bolsa (C5), até 5 anos. Os gráficos mostram o preço semanal, verde nas semanas em que o painel "
+                "aconselhava comprar (forte, média ou compra), lilás em «compra, mas esperar» (boa e barata, mas a tendência ainda "
+                "não virou), cinzento em manter e vermelho em venda.")
     ws["B2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["B2"].font = Font(italic=True, size=9, color="595959")
     ws.merge_cells("B2:N2")
     ws.row_dimensions[2].height = 80
     amarelo = PatternFill("solid", fgColor="FFF2CC")
     borda = Border(*(Side(style="thin", color="BFBFBF"),) * 4)
-    ws["B4"], ws["C4"] = "Período (dias de bolsa; 252 ≈ 1 ano)", g.get("dias") or 252
-    ws["B4"].font = Font(bold=True)
-    ws["C4"].fill, ws["C4"].border, ws["C4"].font = amarelo, borda, Font(bold=True, size=12)
+    ws["B4"], ws["C4"] = f"Período (anos, até {HIS_ANOS_MAX})", g.get("anos") or 1
+    ws["B5"], ws["C5"] = "Um ponto a cada (dias de bolsa: 3 = máximo detalhe, 5 = semana)", g.get("passo") or 5
+    for c_ in ("B4", "B5"):
+        ws[c_].font = Font(bold=True, size=9)
+        ws[c_].alignment = Alignment(wrap_text=True, vertical="center")
+    ws.row_dimensions[4].height = ws.row_dimensions[5].height = 36
+    for c_ in ("C4", "C5"):
+        ws[c_].fill, ws[c_].border, ws[c_].font = amarelo, borda, Font(bold=True, size=12)
     botao(ws, "K4", "▶ GERAR HISTÓRICO", "painelacoes://historico", "1F4E79", "16365C", 14)
     ws.merge_cells("K4:M5")
-    cab = ("Ticker", "Título", "Dias compra forte", "Compra média", "Compra", "Manter", "Venda", "Decisão no último dia")
+    cab = ("Ticker", "Título", "Pontos em compra: esperar", "Compra forte", "Compra média", "Compra", "Manter", "Venda",
+           "Decisão no último ponto")
     for j, h in enumerate(cab, 2):
         c = ws.cell(6, j, h)
         c.font, c.fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F4E79")
@@ -7676,23 +7777,28 @@ def folha_historico(wb, linhas=(), etfs=()):
     for i in range(HIS_N):
         c = ws.cell(7 + i, 2, tks[i] if i < len(tks) else None)
         c.fill, c.border, c.font = amarelo, borda, Font(bold=True)
-        for j, v in enumerate((g.get("resumo") or {}).get(txt(c.value).upper(), [])[:7], 3):
+        for j, v in enumerate(((g.get("resumo") or {}).get(txt(c.value).upper(), []) if g.get("v") == 3 else [])[:8], 3):
             ws.cell(7 + i, j, v)
-    for col, w in zip("BCDEFGHI", (12, 30, 10, 10, 10, 10, 10, 34)):
+    for col, w in zip("BCDEFGHIJ", (24, 30, 10, 10, 10, 10, 10, 10, 34)):
         ws.column_dimensions[col].width = w
-    for j, (_, nome, cor) in enumerate(HIS_CLASSES, 4):
-        ws.cell(5, j, nome).font = Font(bold=True, color=cor, size=9)
+
     # dados (escondidos) e gráficos
+    NS = len(HIS_SER)
     ws.cell(HIS_L0 - 1, HIS_COL0, "Data")
     for k in range(HIS_N):
-        for m, (_, nome, _) in enumerate(HIS_CLASSES):
-            ws.cell(HIS_L0 - 1, HIS_COL0 + 1 + 5 * k + m, nome)
-    for c in range(HIS_COL0, HIS_COL0 + 1 + 5 * HIS_N):
+        for m, (_, nome, _) in enumerate(HIS_SER):
+            ws.cell(HIS_L0 - 1, HIS_COL0 + 1 + NS * k + m, nome)
+    for c in range(HIS_COL0, HIS_COL0 + 1 + NS * HIS_N):
         ws.column_dimensions[get_column_letter(c)].hidden = True
-    dados = g.get("dados")
+    dados = g.get("dados") if g.get("v") == 3 else None
     if dados:
         for i, lin in enumerate(dados[:HIS_MAX]):
             for j, v in enumerate(lin):
+                if j == 0 and isinstance(v, str):
+                    try:
+                        v = datetime.strptime(v, "%Y-%m-%d")
+                    except ValueError:
+                        pass
                 ws.cell(HIS_L0 + i, HIS_COL0 + j, v)
     for r in range(HIS_L0, HIS_L0 + HIS_MAX):
         ws.cell(r, HIS_COL0).number_format = "dd/mm/yyyy"
@@ -7702,7 +7808,7 @@ def folha_historico(wb, linhas=(), etfs=()):
         ws[f"{col_g}{lin_g}"] = f"=IF(B{7 + k}=\"\",\"\",B{7 + k}&\" · \"&C{7 + k})"
         ws[f"{col_g}{lin_g}"].font = Font(bold=True, size=12, color="1F4E79")
         ch = LineChart()
-        ch.add_data(Reference(ws, min_col=HIS_COL0 + 1 + 5 * k, max_col=HIS_COL0 + 5 + 5 * k, min_row=HIS_L0 - 1,
+        ch.add_data(Reference(ws, min_col=HIS_COL0 + 1 + NS * k, max_col=HIS_COL0 + NS * (k + 1), min_row=HIS_L0 - 1,
                               max_row=HIS_L0 + HIS_MAX - 1), titles_from_data=True)
         ch.set_categories(Reference(ws, min_col=HIS_COL0, min_row=HIS_L0, max_row=HIS_L0 + HIS_MAX - 1))
         ch.x_axis.number_format = "mm/yy"
@@ -7712,9 +7818,13 @@ def folha_historico(wb, linhas=(), etfs=()):
             ch.y_axis.delete = False
         except Exception:
             pass
-        for s_, (_, _, cor) in zip(ch.series, HIS_CLASSES):
+        for s_, (_, _, cor) in zip(ch.series, HIS_SER):
             s_.graphicalProperties.line.solidFill = cor
             s_.graphicalProperties.line.width = 28000
+            s_.marker.symbol = "circle"
+            s_.marker.size = 4
+            s_.marker.graphicalProperties.solidFill = cor
+            s_.marker.graphicalProperties.line.solidFill = cor
             s_.smooth = False
         ch.legend.position = "b"
         ch.width, ch.height = 15.5, 8
@@ -7728,9 +7838,14 @@ def calcular_historico():
     import pandas as pd
     from datetime import date as date_
     ex = Excel(FICHEIRO)
-    r = ex.ops([{"op": "ler", "folha": FOLHA_HIS, "rng": "C4"}, {"op": "ler", "folha": FOLHA_HIS, "rng": f"B7:B{6 + HIS_N}"}])
-    n_dias = int(_num_ou(r[0][0][0], 252) or 252)
-    n_dias = max(20, min(HIS_MAX, n_dias))
+    r = ex.ops([{"op": "ler", "folha": FOLHA_HIS, "rng": "C4"}, {"op": "ler", "folha": FOLHA_HIS, "rng": f"B7:B{6 + HIS_N}"},
+                {"op": "ler", "folha": FOLHA_HIS, "rng": "C5"}])
+    passo = int(round(_num_ou(r[2][0][0], 5) or 5)) if len(r) > 2 else 5
+    passo = max(3, min(21, passo))                 # nunca menos de 3 dias de bolsa
+    anos = _num_ou(r[0][0][0], 1) or 1
+    if anos > 20:                                  # folha da V121 (dias de bolsa)
+        anos = anos / 252
+    anos = max(0.25, min(HIS_ANOS_MAX, anos))
     tks = [txt(l_[0]).upper() for l_ in r[1] if txt(l_[0])]
     if not tks:
         print("Histórico: escreve pelo menos um ticker na coluna B (linhas 7 a 16).")
@@ -7753,20 +7868,28 @@ def calcular_historico():
         print("Histórico: não consegui as cotações destes tickers.")
         sys.exit(1)
     loc = loc[cols]
-    dias = list(loc.dropna(how="all").index[-n_dias:])
+    idx_ = loc.dropna(how="all").index
+    idx_ = idx_[idx_ >= idx_[-1] - pd.Timedelta(days=int(anos * 365.25))]
+    dias = list(idx_[::-1][::passo][::-1])         # um ponto a cada «passo» dias de bolsa, a acabar no último dia
+    if len(dias) > HIS_MAX:                         # 5 anos a cada 3 dias ≈ 420 pontos: cabe; mais do que isso, alarga
+        passo = -(-len(idx_) // HIS_MAX)
+        dias = list(idx_[::-1][::passo][::-1])
     sec = {}
     try:
         sec = sec_preparar([d for d in linhas if txt(d.get("tipo")) != "ETF" and txt(d.get("ticker")).upper() in cols],
                            dias[0], hoje)
     except Exception as e:
         print(f"   SEC: {e}")
-    print(f"   a calcular a decisão do painel em {len(dias)} dias ({len(sec)} com relatórios da SEC) ...")
+    print(f"   a calcular a decisão do painel em {len(dias)} pontos (um a cada {passo} dias de bolsa) ({len(sec)} com relatórios da SEC) ...")
     dec = {}
     _sim_notas_painel(loc, tipos, dias, sec, None, dec)
     dados, resumo = [], {}
+    NS = len(HIS_SER)
     for dia in dias:
-        dados.append([dia.to_pydatetime()] + [None] * (5 * HIS_N))
+        dados.append([dia.to_pydatetime()] + [None] * (NS * HIS_N))
     ordem = [c for c, _, _ in HIS_CLASSES]
+    serie_de = lambda c: "compra" if c in ("forte", "media", "compra") else c   # esperar, manter, venda: séries próprias
+    ords = [c for c, _, _ in HIS_SER]
     for k, t in enumerate(tks):
         if t not in cols:
             resumo[t] = [txt(todas.get(t, {}).get("nome")), "sem cotações"]
@@ -7781,27 +7904,29 @@ def calcular_historico():
                 continue
             c = _his_classe(dcs[0])
             cont[c] += 1
-            dados[i][1 + 5 * k + ordem.index(c)] = float(pr)
-            if ant and ant != c:                     # liga a linha: o dia da mudança também na série anterior
-                dados[i][1 + 5 * k + ordem.index(ant)] = float(pr)
-            ant = c
+            sc = serie_de(c)
+            dados[i][1 + NS * k + ords.index(sc)] = float(pr)
+            if ant and ant != sc:                    # liga a linha: a semana da mudança também na série anterior
+                dados[i][1 + NS * k + ords.index(ant)] = float(pr)
+            ant = sc
         ult = next((dec[(d_, t)][0] for d_ in reversed(dias) if (d_, t) in dec), "")
         resumo[t] = [txt(todas.get(t, {}).get("nome")) or t] + [cont[c] for c in ordem] + [ult]
-    _gravar_json(FICH_HIS, {"tickers": tks, "dias": n_dias, "resumo": resumo,
+    _gravar_json(FICH_HIS, {"v": 3, "tickers": tks, "anos": anos, "passo": passo, "resumo": resumo,
                             "dados": [[d[0].strftime("%Y-%m-%d")] + d[1:] for d in dados]})
-    vazio = [[None] * (1 + 5 * HIS_N) for _ in range(HIS_MAX)]
+    vazio = [[None] * (1 + NS * HIS_N) for _ in range(HIS_MAX)]
     for i, lin in enumerate(dados):
         vazio[i] = lin
-    tab_res = [(resumo.get(t, []) + [None] * 7)[:7] for t in tks] + [[None] * 7] * (HIS_N - len(tks))
-    ops = [{"op": "escrever", "folha": FOLHA_HIS, "rng": f"C7:I{6 + HIS_N}", "valores": tab_res},
+    tab_res = [(resumo.get(t, []) + [None] * 8)[:8] for t in tks] + [[None] * 8] * (HIS_N - len(tks))
+    ops = [{"op": "escrever", "folha": FOLHA_HIS, "rng": f"C7:J{6 + HIS_N}", "valores": tab_res},
            {"op": "escrever", "folha": FOLHA_HIS,
-            "rng": f"{get_column_letter(HIS_COL0)}{HIS_L0}:{get_column_letter(HIS_COL0 + 5 * HIS_N)}{HIS_L0 + HIS_MAX - 1}",
+            "rng": f"{get_column_letter(HIS_COL0)}{HIS_L0}:{get_column_letter(HIS_COL0 + NS * HIS_N)}{HIS_L0 + HIS_MAX - 1}",
             "valores": vazio}]
     ex.ops(ops, guardar=True)
     for t in tks:
         r_ = resumo.get(t, [])
-        if len(r_) >= 7:
-            print(f"   {t:10} compra forte {r_[1]:3d} · média {r_[2]:3d} · compra {r_[3]:3d} · manter {r_[4]:3d} · venda {r_[5]:3d}")
+        if len(r_) >= 8:
+            print(f"   {t:10} esperar {r_[1]:3d} · forte {r_[2]:3d} · média {r_[3]:3d} · compra {r_[4]:3d} · "
+                  f"manter {r_[5]:3d} · venda {r_[6]:3d}")
     if falta:
         print("   sem cotações:", ", ".join(falta))
 
@@ -8551,6 +8676,7 @@ def _sim_notas_painel(P, tipos, dias, sec=None, niveis=None, decisoes=None):
     import pandas as pd
     P = P.astype(float)
     m100 = P.rolling(CURTA, min_periods=CURTA).mean()
+    m50 = P.rolling(50, min_periods=50).mean()
     m200 = P.rolling(200, min_periods=200).mean()
     gap = m100 / m200 - 1
     r = np.log(P).diff()
@@ -8592,7 +8718,8 @@ def _sim_notas_painel(P, tipos, dias, sec=None, niveis=None, decisoes=None):
             pr = P.at[dia, t]
             if pd.isna(pr) or nval.at[dia, t] < 200 or pd.isna(m200.at[dia, t]):
                 continue
-            d = {"tipo": tipos.get(t) or "Ação", "mm100c": float(m100.at[dia, t]), "mm200c": float(m200.at[dia, t])}
+            d = {"tipo": tipos.get(t) or "Ação", "mm100c": float(m100.at[dia, t]), "mm200c": float(m200.at[dia, t]),
+                 "mm50": float(m50.at[dia, t]) if pd.notna(m50.at[dia, t]) else None, "preco": float(P.at[dia, t])}
             pos5 = P.index.get_loc(dia) - 5
             if pos5 >= 0 and pd.notna(gap.iloc[pos5][t]):
                 d["gap5"] = float(gap.iloc[pos5][t])
