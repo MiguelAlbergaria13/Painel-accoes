@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V125", "21/11/2026"
+VERSAO, DATA_VERSAO = "V127", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -7711,9 +7711,11 @@ FOLHA_HIS = "Histórico"
 FICH_HIS = os.path.join(PASTA, BASE + "_historico.json")
 HIS_N, HIS_L0, HIS_MAX = 10, 40, 430          # títulos; 1.ª linha dos dados (colunas escondidas); pontos no máximo
 HIS_ANOS_MAX = 5
-HIS_SER = (("compra", "Compra (forte, média ou compra)", "2E8B3E"), ("esperar", "Compra, mas esperar", "8E6BBF"),
-           ("manter", "Manter", "A6A6A6"), ("venda", "Venda", "E06666"))           # séries dos gráficos (3 cores)
-HIS_COL0 = 27                                  # coluna AA: datas; depois 5 séries por título
+HIS_SER = (("forte", "Compra forte", "17692C"), ("media", "Compra média", "4CAF50"), ("compra", "Compra", "B5DB8F"),
+           ("esperar", "Compra, mas esperar", "8E6BBF"), ("manter", "Manter", "A6A6A6"),
+           ("venda", "Venda", "E06666"))                                         # séries dos gráficos (6 cores)
+HIS_COL0 = 27                                  # coluna AA: datas; depois 6 séries por título
+HIS_V = 4                                      # versão do ficheiro do histórico (4: 6 séries)
 HIS_CLASSES = (("esperar", "Compra, mas esperar", "8E6BBF"), ("forte", "Compra forte", "1E7B34"), ("media", "Compra média", "63BE7B"), ("compra", "Compra", "A9D18E"),
                ("manter", "Manter", "A6A6A6"), ("venda", "Venda", "E06666"))
 
@@ -7736,7 +7738,7 @@ def _his_classe(dec):
 def folha_historico(wb, linhas=(), etfs=()):
     """Folha Histórico: a decisão do painel em cada dia do último ano (ou do período escolhido), para até 10
     títulos, calculada só com os dados conhecidos em cada dia (cotações; nos EUA também os relatórios da SEC)."""
-    from openpyxl.chart import LineChart, Reference
+    from openpyxl.chart import ScatterChart, Reference, Series
     g = _ler_json(FICH_HIS, {})
     tks = g.get("tickers") or [txt(d.get("ticker")) for d in list(linhas) + list(etfs) if e_detido(d.get("det"))][:HIS_N]
     ws = wb.create_sheet(FOLHA_HIS)
@@ -7746,11 +7748,13 @@ def folha_historico(wb, linhas=(), etfs=()):
                 "HISTÓRICO. Para cada dia do período, o painel calcula a decisão com as regras e pesos atuais, mas só com "
                 "o que se sabia nesse dia: as cotações (médias, rede de segurança, retas, fator de tendência) e, nas ações "
                 "dos EUA, os relatórios anuais já publicados na SEC (qualidade, saúde, PER, FCF, valor justo e nível de "
-                "preço). Os analistas não têm histórico: contam como o sinal. Fora dos EUA, sem nível de preço, a nota "
+                "preço). Fora dos EUA, sem nível de preço, a nota "
                 "global é a nota geral e os limites são os da nota geral (4,5 / 3,75 / 2,75), por isso a compra forte é "
-                "rara. Um ponto a cada 3 a 5 dias de bolsa (C5), até 5 anos. Os gráficos mostram o preço semanal, verde nas semanas em que o painel "
-                "aconselhava comprar (forte, média ou compra), lilás em «compra, mas esperar» (boa e barata, mas a tendência ainda "
-                "não virou), cinzento em manter e vermelho em venda.")
+                "rara. Os analistas não têm histórico: o sinal é o da tendência. O lucro por ação é o dos últimos 4 trimestres "
+                "já divulgados (10-Q e 10-K), como na tabela. O ÚLTIMO PONTO é a decisão da tabela (com analistas), para bater com ela. "
+                "Um ponto a cada 3 a 5 dias de bolsa (C5), até 5 anos. Cores: verde escuro compra forte, verde compra média, "
+                "verde claro compra, lilás «compra, mas esperar» (boa e barata, mas a tendência ainda não virou), cinzento "
+                "manter, vermelho venda.")
     ws["B2"].alignment = Alignment(wrap_text=True, vertical="top")
     ws["B2"].font = Font(italic=True, size=9, color="595959")
     ws.merge_cells("B2:N2")
@@ -7780,7 +7784,7 @@ def folha_historico(wb, linhas=(), etfs=()):
     for i in range(HIS_N):
         c = ws.cell(7 + i, 2, tks[i] if i < len(tks) else None)
         c.fill, c.border, c.font = amarelo, borda, Font(bold=True)
-        for j, v in enumerate(((g.get("resumo") or {}).get(txt(c.value).upper(), []) if g.get("v") == 3 else [])[:8], 3):
+        for j, v in enumerate(((g.get("resumo") or {}).get(txt(c.value).upper(), []) if g.get("v") in (3, HIS_V) else [])[:8], 3):
             ws.cell(7 + i, j, v)
     for col, w in zip("BCDEFGHIJ", (24, 30, 10, 10, 10, 10, 10, 10, 34)):
         ws.column_dimensions[col].width = w
@@ -7793,7 +7797,7 @@ def folha_historico(wb, linhas=(), etfs=()):
             ws.cell(HIS_L0 - 1, HIS_COL0 + 1 + NS * k + m, nome)
     for c in range(HIS_COL0, HIS_COL0 + 1 + NS * HIS_N):
         ws.column_dimensions[get_column_letter(c)].hidden = True
-    dados = g.get("dados") if g.get("v") == 3 else None
+    dados = g.get("dados") if g.get("v") == HIS_V else None
     if dados:
         for i, lin in enumerate(dados[:HIS_MAX]):
             for j, v in enumerate(lin):
@@ -7810,24 +7814,39 @@ def folha_historico(wb, linhas=(), etfs=()):
         col_g = "B" if k % 2 == 0 else "H"
         ws[f"{col_g}{lin_g}"] = f"=IF(B{7 + k}=\"\",\"\",B{7 + k}&\" · \"&C{7 + k})"
         ws[f"{col_g}{lin_g}"].font = Font(bold=True, size=12, color="1F4E79")
-        ch = LineChart()
-        ch.add_data(Reference(ws, min_col=HIS_COL0 + 1 + NS * k, max_col=HIS_COL0 + NS * (k + 1), min_row=HIS_L0 - 1,
-                              max_row=HIS_L0 + HIS_MAX - 1), titles_from_data=True)
-        ch.set_categories(Reference(ws, min_col=HIS_COL0, min_row=HIS_L0, max_row=HIS_L0 + HIS_MAX - 1))
-        ch.x_axis.number_format = "mm/yy"
+        ch = ScatterChart()                             # XY: o eixo das datas ajusta-se aos pontos que existem
+        ch.style = 13
+        xs = Reference(ws, min_col=HIS_COL0, min_row=HIS_L0, max_row=HIS_L0 + HIS_MAX - 1)
+        for m in range(NS):
+            col = HIS_COL0 + 1 + NS * k + m
+            sr = Series(Reference(ws, min_col=col, min_row=HIS_L0 - 1, max_row=HIS_L0 + HIS_MAX - 1), xs,
+                        title_from_data=True)
+            ch.series.append(sr)
+        ch.x_axis.number_format = "dd-mm-yyyy"
+        ch.x_axis.tickLblPos = "low"                    # datas em baixo, dentro da área do gráfico
+        try:                                            # letra pequena (7) e inclinada
+            from openpyxl.chart.text import RichText
+            from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties, RichTextProperties
+            ch.x_axis.txPr = RichText(bodyPr=RichTextProperties(rot=-2700000, vert="horz"),
+                                      p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(sz=700)),
+                                                   endParaRPr=CharacterProperties(sz=700))])
+            ch.y_axis.txPr = RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(sz=800)),
+                                                   endParaRPr=CharacterProperties(sz=800))])
+        except Exception:
+            pass
         ch.y_axis.number_format = "#,##0.00"
         try:
             ch.x_axis.delete = False
             ch.y_axis.delete = False
         except Exception:
             pass
+        from openpyxl.chart.marker import Marker
+        from openpyxl.chart.shapes import GraphicalProperties
+        from openpyxl.drawing.line import LineProperties
         for s_, (_, _, cor) in zip(ch.series, HIS_SER):
-            s_.graphicalProperties.line.solidFill = cor
-            s_.graphicalProperties.line.width = 28000
-            s_.marker.symbol = "circle"
-            s_.marker.size = 4
-            s_.marker.graphicalProperties.solidFill = cor
-            s_.marker.graphicalProperties.line.solidFill = cor
+            s_.graphicalProperties = GraphicalProperties(ln=LineProperties(solidFill=cor, w=22000))
+            s_.marker = Marker(symbol="circle", size=4)
+            s_.marker.graphicalProperties = GraphicalProperties(solidFill=cor, ln=LineProperties(solidFill=cor))
             s_.smooth = False
         ch.legend.position = "b"
         ch.width, ch.height = 15.5, 8
@@ -7886,12 +7905,16 @@ def calcular_historico():
     print(f"   a calcular a decisão do painel em {len(dias)} pontos (um a cada {passo} dias de bolsa) ({len(sec)} com relatórios da SEC) ...")
     dec = {}
     _sim_notas_painel(loc, tipos, dias, sec, None, dec)
+    for t, d in zip(tks, linhas):                  # último ponto = a decisão da tabela (tem analistas e dados de hoje)
+        dt_ = txt(d.get("decisao"))
+        if dt_ and dias and t in cols:
+            dec[(dias[-1], t)] = (dt_, d.get("nota_geral"), d.get("nivel_preco"))
     dados, resumo = [], {}
     NS = len(HIS_SER)
     for dia in dias:
         dados.append([dia.to_pydatetime()] + [None] * (NS * HIS_N))
     ordem = [c for c, _, _ in HIS_CLASSES]
-    serie_de = lambda c: "compra" if c in ("forte", "media", "compra") else c   # esperar, manter, venda: séries próprias
+    serie_de = lambda c: c                         # uma série (cor) por classe
     ords = [c for c, _, _ in HIS_SER]
     for k, t in enumerate(tks):
         if t not in cols:
@@ -7914,7 +7937,7 @@ def calcular_historico():
             ant = sc
         ult = next((dec[(d_, t)][0] for d_ in reversed(dias) if (d_, t) in dec), "")
         resumo[t] = [txt(todas.get(t, {}).get("nome")) or t] + [cont[c] for c in ordem] + [ult]
-    _gravar_json(FICH_HIS, {"v": 3, "tickers": tks, "anos": anos, "passo": passo, "resumo": resumo,
+    _gravar_json(FICH_HIS, {"v": HIS_V, "tickers": tks, "anos": anos, "passo": passo, "resumo": resumo,
                             "dados": [[d[0].strftime("%Y-%m-%d")] + d[1:] for d in dados]})
     vazio = [[None] * (1 + NS * HIS_N) for _ in range(HIS_MAX)]
     for i, lin in enumerate(dados):
@@ -8481,6 +8504,43 @@ def _sec_anuais(js):
     return out
 
 
+def _sec_ttm_eps(js):
+    """Lucro por ação dos últimos 12 meses (4 trimestres) em cada data de divulgação, só com o que já tinha saído:
+    [(disponivel, eps_12m, fim)], por data. Trimestres dos 10-Q; o 4.º = ano (10-K) − 3 trimestres."""
+    from datetime import datetime as dt_
+    g = (js.get("facts") or {}).get("us-gaap") or {}
+    per = {}                                           # (início, fim) -> (valor, divulgado), 1.ª divulgação
+    for pri, c in enumerate(SEC_FLUXO["eps"]):
+        for x in ((g.get(c) or {}).get("units") or {}).get("USD/shares") or []:
+            if x.get("form") not in ("10-Q", "10-K", "10-Q/A", "10-K/A") or "start" not in x or "end" not in x:
+                continue
+            k = (x["start"], x["end"])
+            ant = per.get(k)
+            if ant is None or pri < ant[2] or (pri == ant[2] and x["filed"] < ant[1]):
+                per[k] = (float(x["val"]), x["filed"], pri)
+    dd = lambda a, b: (dt_.strptime(b, "%Y-%m-%d") - dt_.strptime(a, "%Y-%m-%d")).days
+    tri = {}                                           # fim -> (início, eps, divulgado)
+    for (a, b), (v, f, _) in per.items():
+        if 80 <= dd(a, b) <= 100:
+            tri[b] = (a, v, f)
+    for (a, b), (v, f, _) in per.items():              # 4.º trimestre a partir do ano
+        if 330 <= dd(a, b) <= 400 and b not in tri:
+            qs = [q for e, q in tri.items() if a <= q[0] and e < b]
+            if len(qs) == 3:
+                ini4 = max(e for e, q in tri.items() if a <= q[0] and e < b)
+                tri[b] = (ini4, v - sum(q[1] for q in qs), f)
+    fins = sorted(tri)
+    out = []
+    for i in range(3, len(fins)):
+        q4 = fins[i - 3:i + 1]
+        if dd(q4[0], q4[-1]) > 300:                     # 4 trimestres seguidos (≈ 9 meses entre o 1.º e o último fim)
+            continue
+        disp = max(tri[e][2] for e in q4)
+        out.append((disp, sum(tri[e][1] for e in q4), q4[-1]))
+    out.sort()
+    return out
+
+
 def _qual_saude(v, financeira=False):
     """Qualidade (0-5) e saúde (0-5, com ALERTA) com as mesmas regras de fundamentos(), a partir de números."""
     out = {}
@@ -8538,8 +8598,10 @@ class SecHist:
     """Fundamentos de uma empresa dos EUA em qualquer data, só com os relatórios anuais já divulgados nessa data
     (lucro por ação, PER, PER habitual de 3 anos, valor justo, FCF yield, qualidade e saúde)."""
 
-    def __init__(self, anuais, splits, preco_usd, financeira=False):
+    def __init__(self, anuais, splits, preco_usd, financeira=False, ttm=None):
         import pandas as pd
+        self.ttm = ttm or []                          # lucro por ação dos últimos 4 trimestres (10-Q)
+        self.ttm_disp = [pd.Timestamp(x[0]) for x in self.ttm]
         self.an = anuais
         self.disp = [pd.Timestamp(r["disponivel"]) for r in anuais]
         self.splits = splits if splits is not None else pd.Series(dtype=float)
@@ -8567,6 +8629,9 @@ class SecHist:
             r["eps"] = r["ni"] / r["acoes"]
         if r.get("eps") is not None:
             r["eps"] = r["eps"] / f
+        j = bisect.bisect_right(self.ttm_disp, pd.Timestamp(dia)) - 1
+        if j >= 0 and self.ttm_disp[j] >= pd.Timestamp(r["disponivel"]):   # trimestres mais recentes do que o ano
+            r["eps"] = self.ttm[j][1] / self._fator(self.ttm_disp[j])
         if r.get("acoes") is not None:
             r["acoes"] = r["acoes"] * f
         if r.get("ocf") is not None and r.get("capex") is not None:
@@ -8661,7 +8726,11 @@ def sec_preparar(linhas_acoes, ini, fim):
                     sp.index = sp.index.tz_localize(None)
             except Exception:
                 sp = None
-            out[t] = SecHist(an, sp, p, fin)
+            try:
+                ttm = _sec_ttm_eps(js)
+            except Exception:
+                ttm = []
+            out[t] = SecHist(an, sp, p, fin, ttm)
         except Exception:
             continue
     print(f"   SEC: fundamentos históricos de {len(out)} empresas.")
