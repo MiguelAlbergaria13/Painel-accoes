@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V135", "21/11/2026"
+VERSAO, DATA_VERSAO = "V138", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -1533,11 +1533,14 @@ def folha(ws, nome, titulo, linhas, atualizado, ranking, criterio, idx, estado=N
                 font=Font(bold=lim >= 4.5 or k == "nota"), stopIfTrue=True))
     if "nota_geral" in COL:
         ngl = let(COL["nota_geral"])
-        for lim, cor in ((3.95, "63BE7B"), (3.5, "A9D18E"), (3.0, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
-            for k in ("nota_geral", "decisao"):       # nota global e decisão (que segue a nota global): limites 4 / 3,5 / 3
+        # limites: ações com nível de preço 3,95 / 3,5 / 3; ETFs e ações sem nível de preço 4,5 / 3,75 / 2,75
+        for i_, cor in enumerate(("63BE7B", "A9D18E", "E2EFDA", "F4B183", "FFEB9C", "F8696B")):
+            la, le = (LIM_ACOES + (2.25, 1.5, -99))[i_], (LIM_ETFS + (2.25, 1.5, -99))[i_]
+            lim = f"IF(ISNUMBER(${nvl}{L0+1}),{la},{le})" if la != le else la   # ETFs com nível (das ações) = ações
+            for k in ("nota_geral", "decisao"):       # nota global e decisão (que segue a nota global)
                 ws.conditional_formatting.add(faixa(k), FormulaRule(
                     formula=[f"AND(ISNUMBER(${ngl}{L0+1}),${ngl}{L0+1}>={lim})"], fill=PatternFill("solid", bgColor=cor),
-                    font=Font(bold=k == "nota_geral" or lim >= 3.95), stopIfTrue=True))
+                    font=Font(bold=k == "nota_geral" or i_ == 0), stopIfTrue=True))
     for v, cor in ((5, "63BE7B"), (4, "A9D18E"), (3, "E2EFDA"), (2.5, "F4B183"), (2, "FFEB9C"), (1, "F8696B")):
         for k in ("pont",):                           # pontuação do sinal: 5 verde-escuro … 1 vermelho
             ws.conditional_formatting.add(faixa(k), FormulaRule(
@@ -3463,6 +3466,8 @@ def sobre_compra(d):
 
 
 GERAL_LIM = (3.95, 3.5, 3.0)
+LIM_ACOES = GERAL_LIM          # ações: nota global (com o nível de preço) -> compra forte / média / compra
+LIM_ETFS = (4.5, 3.75, 2.75)   # ETFs e ações sem nível de preço: a nota global é a nota geral (escala não comprimida)
 COR_ESPERA = "D9C3E9"          # «Compra …: esperar (…)»: lilás (o azul já é «cara»)     # nota global: compra forte / média / compra (a média com o preço puxa para o meio)
 
 
@@ -5766,15 +5771,16 @@ const cmpX=()=>{let c=null;try{c=JSON.parse(localStorage.getItem('cmp_x')||'null
   if(c&&(c.ts||0)<tsX)c=null;
   return c||{nq:(D.cmp&&D.cmp.nq)||[],nd:(D.cmp&&D.cmp.nd)||[]};};
 const nPt=v=>{const x=parseFloat(String(v).replace(/\s|€|%/g,'').replace(',','.'));return isNaN(x)?null:x;};
+const corT=d=>d.np!=null?corG(d.ngc):cor(d.ngc);   // ações com nível de preço: 3,95/3,5/3; ETFs: 4,5/3,75/2,75
 const corDecF=d=>{const dc=d.dc||'';return dc.includes(': esperar')?'#D9C3E9':/saúde frágil/i.test(dc)?'#F8CBAD':
-  dc.startsWith('Venda')?'#F8696B':/Longo Prazo/.test(dc)?'#F4B183':dc.startsWith('Manter')?'#FFEB9C':corG(d.ngc);};
+  dc.startsWith('Venda')?'#F8696B':/Longo Prazo/.test(dc)?'#F4B183':dc.startsWith('Manter')?'#FFEB9C':corT(d);};
 function compra(){
   const c=cmpCfg(),ck=v=>v?' checked':'';
   return `<div class="card" id="cf" style="font-size:13px"><div class="cfg">
   <label>Ações: nota global ≥<input id="ca" inputmode="decimal" value="${num(c.a,2)}"></label>
   <label>ETFs: nota global ≥<input id="ce" inputmode="decimal" value="${num(c.e,2)}"></label>
   <label>Valor total (€)<input id="ct" inputmode="decimal" value="${num(c.t,2)}"></label>
-  <label>% em ações<input id="cp" inputmode="decimal" value="${num(c.p,0)}%"></label></div>
+  <label>% em ações<input id="cp" inputmode="decimal" value="${num(c.p,2)}%"></label></div>
   <label class="chk"><input type="checkbox" id="cs"${ck(c.s)}> Só os que o painel manda comprar</label>
   <div style="color:var(--mu);font-size:11px;margin:2px 0 0 26px">Ligado: só entram decisões «Compra forte / média / Compra» (também «… : esperar»). Desligado: entram também os que estão em Manter (ou Venda) mas têm a nota global acima do mínimo.</div>
   <label class="chk"><input type="checkbox" id="ch"${ck(c.h)}> Incluir os que já tenho</label>
@@ -5787,14 +5793,16 @@ function calcCompra(){
   const c0=cmpCfg();
   if(['a','e','t','p','s','h'].some(k=>c[k]!==c0[k])){c.ts=Date.now();try{localStorage.setItem('cmp_cfg',JSON.stringify(c));}catch(e){}}
   const X=cmpX(),nq=new Set(X.nq),nd=new Set(X.nd),q=(document.getElementById('q').value||'').trim().toLowerCase();
-  const txtN=v=>v>=3.95?'= Compra forte':v>=3.5?'= Compra média':v>=3?'= Compra':'= abaixo de Compra (entram títulos que o painel não aconselha comprar)';
-  g('cx').textContent=`Ações ${txtN(c.a)} · ETFs ${txtN(c.e)} · ações ${eur(c.t*c.p/100)} · ETFs ${eur(c.t*(1-c.p/100))}`;
+  const txtN=(v,L)=>v>=L[0]?'= Compra forte':v>=L[1]?'= Compra média':v>=L[2]?'= Compra':'= abaixo de Compra (entram títulos que o painel não aconselha comprar)';
+  const LA=[3.95,3.5,3],LE=[4.5,3.75,2.75];
+  g('cx').textContent=`Ações ${txtN(c.a,LA)} · ETFs ${txtN(c.e,LE)} · ações ${eur(c.t*c.p/100)} · ETFs ${eur(c.t*(1-c.p/100))}`;
   let h='';
   for(const [nome,lista,mn,val] of [['Ações',D.a,c.a,c.t*c.p/100],['ETFs',D.e,c.e,c.t*(1-c.p/100)]]){
     const esc_=[];
     for(const d of lista){
       let ng=d.ng??d.nt;const dc=d.dc||'';
-      if(dc.includes(': esperar'))ng=Math.max(ng??0,dc.startsWith('Compra forte')?3.95:dc.startsWith('Compra média')?3.5:3);
+      const L=d.np!=null?LA:LE;
+      if(dc.includes(': esperar'))ng=Math.max(ng??0,dc.startsWith('Compra forte')?L[0]:dc.startsWith('Compra média')?L[1]:L[2]);
       if(ng==null||Math.round(ng*100)/100<mn-1e-9)continue;
       if(c.s&&!dc.startsWith('Compra'))continue;
       if(d.x&&!c.h)continue;
@@ -5804,7 +5812,7 @@ function calcCompra(){
     let tv=0;
     const cards=esc_.filter(d=>!q||(d.n+' '+d.c+' '+d.t).toLowerCase().includes(q)).map(d=>{
       const f=fora(d),w=f||!soma?0:d.ngc/soma,v=w*val,pe=d.p!=null&&d.fx!=null?d.p*d.fx:null,na=pe&&v>0?v/pe:null;
-      return `<div class="card cmp${f?' fora':''}"><div class="top"><div class="nota" style="background:${corG(d.ngc)}">${num(d.ngc,2)}</div>
+      return `<div class="card cmp${f?' fora':''}"><div class="top"><div class="nota" style="background:${corT(d)}">${num(d.ngc,2)}</div>
       <div class="nm"><b>${d.x?'<span class="det">★ </span>':''}${d.t?`<a href="https://finance.yahoo.com/chart/${encodeURIComponent(d.t)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline dotted">${esc(d.n)}</a>`:esc(d.n)}</b><span>${esc(d.c)} · ${d.t?`<a href="https://finance.yahoo.com/chart/${encodeURIComponent(d.t)}" target="_blank" rel="noopener" style="color:inherit">${esc(d.t)} 📈</a>`:''}</span></div>
       <div class="px">${eur(v)}<span>${num(w*100,1)}% do grupo</span></div></div>
       <span class="dec" style="background:${corDecF(d)};${dc_(d)}">${esc(d.dc)}</span>
@@ -5821,7 +5829,7 @@ const dc_=d=>(d.dc||'').includes(': esperar')?'color:#5B2C83;font-weight:700':(d
 function ligarCompra(){
   const cp=document.getElementById('cp');                       // % sempre com o símbolo (60%, não 0,6)
   cp.addEventListener('focus',()=>{cp.value=cp.value.replace('%','').trim();});
-  cp.addEventListener('blur',()=>{let v=nPt(cp.value);if(v!=null&&v>0&&v<=1)v*=100;cp.value=v==null?'':num(v,0)+'%';});
+  cp.addEventListener('blur',()=>{let v=nPt(cp.value);if(v!=null&&v>0&&v<=1)v*=100;cp.value=v==null?'':num(v,2)+'%';});
   ['ca','ce','ct','cp'].forEach(id=>{const e=document.getElementById(id);e.addEventListener('input',calcCompra);
     e.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();e.blur();}});});
   ['cs','ch'].forEach(id=>document.getElementById(id).addEventListener('change',calcCompra));
@@ -7592,14 +7600,15 @@ CMP_L0 = 13                     # primeira linha da tabela de resultados da folh
 CMP_MAX = 150
 CMP_CAB = ("Não quero (x)", "Não disponível (x)", "Título", "Ticker", "Tipo", "Nota global", "Decisão", "Preço atual",
            "Compra máxima (ordem limite)", "Compra máxima / atual (%)", "Peso no grupo (%)", "Valor a investir (€)",
-           "Nº de ações (aprox.)", "Tenho", "Câmbio para €", "Moeda")
+           "Nº de ações (aprox.)", "Tenho", "Câmbio para €", "Moeda", "Escala")
 # colunas da tabela (letras)
-CQ, CND, CT, CTK, CTP, CNT, CDC, CPR, CMX, CMXP, CPS, CVL, CNA, CTEM, CFX, CMO = "ABCDEFGHIJKLMNOP"
+CQ, CND, CT, CTK, CTP, CNT, CDC, CPR, CMX, CMXP, CPS, CVL, CNA, CTEM, CFX, CMO, CESC = "ABCDEFGHIJKLMNOPQ"
 
 
-def _nota_txt_formula(cel):
+def _nota_txt_formula(cel, lims=None):
     """Fórmula que diz a que corresponde a nota global mínima (mesmos limites da decisão)."""
-    return (f'=IF(ISNUMBER({cel}),IF({cel}>=3.95,"= Compra forte",IF({cel}>=3.5,"= Compra média",IF({cel}>=3,'
+    a, b, c = lims or LIM_ACOES
+    return (f'=IF(ISNUMBER({cel}),IF({cel}>={a},"= Compra forte",IF({cel}>={b},"= Compra média",IF({cel}>={c},'
             f'"= Compra","= abaixo de Compra (Manter): entram títulos que o painel não aconselha comprar"))),"")')
 
 
@@ -7641,7 +7650,7 @@ def folha_compra(wb):
         ws[cv].fill, ws[cv].border, ws[cv].number_format = amarelo, borda, fm
         ws[cv].font = Font(bold=True, size=12)
         ws[cv].alignment = Alignment(horizontal="center")
-    ws["E4"], ws["E5"] = _nota_txt_formula("D4"), _nota_txt_formula("D5")
+    ws["E4"], ws["E5"] = _nota_txt_formula("D4"), _nota_txt_formula("D5", LIM_ETFS)
     ws["E6"] = '=IF(ISNUMBER(D6),"Ações: "&TEXT(D6*D7,"#,##0.00")&" € · ETFs: "&TEXT(D6*(1-D7),"#,##0.00")&" €","")'
     ws["E7"] = '=IF(ISNUMBER(D7),"ETFs: "&TEXT(1-D7,"0%"),"")'
     for c_ in ("E4", "E5", "E6", "E7"):
@@ -7652,7 +7661,8 @@ def folha_compra(wb):
         ws[c_].font = Font(italic=True, size=9, color="808080")
     botao(ws, "K4", "▶ CALCULAR COMPRA", "painelacoes://compra", "548235", "375623", 14)
     ws.merge_cells("K4:M5")
-    ws["K7"] = "Escalas da nota global: ≥ 3,95 compra forte · ≥ 3,5 compra média · ≥ 3 compra"
+    ws["K7"] = ("Escalas da nota global: ações ≥ 3,95 forte · ≥ 3,5 média · ≥ 3 compra; ETFs sem nível de preço "
+                "(ouro, obrigações, ou sem ações conhecidas) ≥ 4,5 forte · ≥ 3,75 média · ≥ 2,75 compra")
     ws["K7"].font = Font(size=9, color="595959")
     ws["C11"] = "Resultado"
     ws["C11"].font = Font(bold=True, size=12)
@@ -7672,6 +7682,7 @@ def folha_compra(wb):
         ws.column_dimensions[col].width = w
     ws.column_dimensions[CFX].hidden = True
     ws.column_dimensions[CMO].hidden = True
+    ws.column_dimensions[CESC].hidden = True       # 1 = com nível de preço (limites 3,95/3,5/3), senão 4,5/3,75/2,75
     a0, an = CMP_L0, CMP_L0 + CMP_MAX
     from openpyxl.formatting.rule import Rule as Rule_, FormulaRule as FR
     from openpyxl.styles.differential import DifferentialStyle as DS_
@@ -7685,9 +7696,15 @@ def folha_compra(wb):
     ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(          # excluído: cinzento riscado
         formula=[f'OR(LOWER(TRIM(${CQ}{a0}))="x",LOWER(TRIM(${CND}{a0}))="x")'], font=Font(color="A6A6A6", strike=True),
         stopIfTrue=True))
-    for lim, cor in ((3.95, "63BE7B"), (3.5, "A9D18E"), (3.0, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
-        ws.conditional_formatting.add(f"{CNT}{a0}:{CNT}{an}", FR(
-            formula=[f"AND(ISNUMBER(${CNT}{a0}),${CNT}{a0}>={lim})"], fill=PatternFill("solid", bgColor=cor), stopIfTrue=True))
+    for col_, cond_ in ((CNT, f'AND(ISNUMBER(${CNT}{a0}),${CNT}{a0}>={{lim}})'),
+                        (CDC, f'AND(${CDC}{a0}<>"",ISNUMBER(${CNT}{a0}),${CNT}{a0}>={{lim}})')):
+        if col_ == CDC:
+            continue                                  # a decisão tem as suas regras mais abaixo
+        for i_, cor in enumerate(("63BE7B", "A9D18E", "E2EFDA", "F4B183", "FFEB9C", "F8696B")):
+            la, le = (LIM_ACOES + (2.25, 1.5, -99))[i_], (LIM_ETFS + (2.25, 1.5, -99))[i_]
+            lim = f'IF(${CESC}{a0}=1,{la},{le})'
+            ws.conditional_formatting.add(f"{col_}{a0}:{col_}{an}", FR(
+                formula=[cond_.format(lim=lim)], fill=PatternFill("solid", bgColor=cor), stopIfTrue=True))
     ws.conditional_formatting.add(f"{CT}{a0}:{CTEM}{an}", FR(
         formula=[f'OR(LEFT(${CT}{a0},5)="Total",LEFT(${CT}{a0},5)="Lista")'], font=Font(bold=True),
         fill=PatternFill("solid", bgColor="DDEBF7")))
@@ -7700,10 +7717,12 @@ def folha_compra(wb):
                          (f'LEFT({dcl},6)="Manter"', "FFEB9C", None)):
         ws.conditional_formatting.add(f"{CDC}{a0}:{CDC}{an}", FR(formula=[f_], fill=PatternFill("solid", bgColor=cor),
                                                                 font=fnt, stopIfTrue=True))
-    for lim, cor in ((3.95, "63BE7B"), (3.5, "A9D18E"), (3.0, "E2EFDA"), (2.25, "F4B183"), (1.5, "FFEB9C"), (-99, "F8696B")):
+    for i_, cor in enumerate(("63BE7B", "A9D18E", "E2EFDA", "F4B183", "FFEB9C", "F8696B")):
+        la, le = (LIM_ACOES + (2.25, 1.5, -99))[i_], (LIM_ETFS + (2.25, 1.5, -99))[i_]
+        lim = f'IF(${CESC}{a0}=1,{la},{le})'          # sem nível de preço: 4,5 / 3,75 / 2,75
         ws.conditional_formatting.add(f"{CDC}{a0}:{CDC}{an}", FR(
             formula=[f'AND({dcl}<>"",ISNUMBER(${CNT}{a0}),${CNT}{a0}>={lim})'], fill=PatternFill("solid", bgColor=cor),
-            font=Font(bold=lim >= 3.95), stopIfTrue=True))
+            font=Font(bold=i_ == 0), stopIfTrue=True))
     res = _ler_json(FICH_COMPRA, {}).get("linhas2") or []
     for i, lin in enumerate(res[:CMP_MAX]):
         for j, v in enumerate(lin, 1):
@@ -7761,8 +7780,9 @@ def calcular_compra():
             ng = d.get("nota_geral") if isinstance(d.get("nota_geral"), (int, float)) else d.get("nota")
             dc_ = txt(d.get("decisao"))
             if ": esperar" in dc_:                    # boa e barata, mas ainda não é altura: a nota de hoje está baixa
-                nv_ = 3.95 if dc_.startswith(NIVEIS[5]) else 3.5 if dc_.startswith(NIVEIS[4]) else 3.0   # por causa do
-                ng = max(ng if isinstance(ng, (int, float)) else 0, nv_)                                   # momento: a do nível
+                lm_ = LIM_ACOES if isinstance(d.get("nivel_preco"), (int, float)) else LIM_ETFS   # por causa do momento:
+                nv_ = lm_[0] if dc_.startswith(NIVEIS[5]) else lm_[1] if dc_.startswith(NIVEIS[4]) else lm_[2]   # a do nível
+                ng = max(ng if isinstance(ng, (int, float)) else 0, nv_)
             if not isinstance(ng, (int, float)) or round(ng, 2) < mn - 1e-9:
                 continue
             if p["so_compra"] and not dc_.startswith("Compra"):
@@ -7790,7 +7810,8 @@ def calcular_compra():
                            d.get("teto_pct"), peso, f"={CPS}{r_}*{val_g}",
                            f'=IF(AND(ISNUMBER({CPR}{r_}),ISNUMBER({CFX}{r_}),{CPR}{r_}>0,{CVL}{r_}>0),'
                            f'{CVL}{r_}/({CPR}{r_}*{CFX}{r_}),"")',
-                           "★" if tem else "", fx if isinstance(fx, (int, float)) else None, txt(d.get("moeda"))])
+                           "★" if tem else "", fx if isinstance(fx, (int, float)) else None, txt(d.get("moeda")),
+                           1 if isinstance(d.get("nivel_preco"), (int, float)) else 0])
         r_ = CMP_L0 + len(linhas)
         lin_t = [""] * len(CMP_CAB)
         lin_t[2] = f"Total {'ações' if nome_g == 'Ações' else 'ETFs'}"
