@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V124", "21/11/2026"
+VERSAO, DATA_VERSAO = "V125", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -7757,7 +7757,7 @@ def folha_historico(wb, linhas=(), etfs=()):
     ws.row_dimensions[2].height = 80
     amarelo = PatternFill("solid", fgColor="FFF2CC")
     borda = Border(*(Side(style="thin", color="BFBFBF"),) * 4)
-    ws["B4"], ws["C4"] = f"Período (anos, até {HIS_ANOS_MAX})", g.get("anos") or 1
+    ws["B4"], ws["C4"] = f"Período (anos, até {HIS_ANOS_MAX}; =4/52 para 4 semanas)", g.get("anos") or 1
     ws["B5"], ws["C5"] = "Um ponto a cada (dias de bolsa: 3 = máximo detalhe, 5 = semana)", g.get("passo") or 5
     for c_ in ("B4", "B5"):
         ws[c_].font = Font(bold=True, size=9)
@@ -7765,6 +7765,9 @@ def folha_historico(wb, linhas=(), etfs=()):
     ws.row_dimensions[4].height = ws.row_dimensions[5].height = 36
     for c_ in ("C4", "C5"):
         ws[c_].fill, ws[c_].border, ws[c_].font = amarelo, borda, Font(bold=True, size=12)
+    ws["C4"].number_format = "0.00"
+    ws["D4"] = '=IF(ISNUMBER(C4),TEXT(C4*52,"0")&" semanas","")'
+    ws["D4"].font = Font(size=9, color="7030A0")
     botao(ws, "K4", "▶ GERAR HISTÓRICO", "painelacoes://historico", "1F4E79", "16365C", 14)
     ws.merge_cells("K4:M5")
     cab = ("Ticker", "Título", "Pontos em compra: esperar", "Compra forte", "Compra média", "Compra", "Manter", "Venda",
@@ -7845,7 +7848,7 @@ def calcular_historico():
     anos = _num_ou(r[0][0][0], 1) or 1
     if anos > 20:                                  # folha da V121 (dias de bolsa)
         anos = anos / 252
-    anos = max(0.25, min(HIS_ANOS_MAX, anos))
+    anos = max(7 / 365.25, min(HIS_ANOS_MAX, anos))     # de 1 semana a 5 anos (p. ex. =4/52 para 4 semanas)
     tks = [txt(l_[0]).upper() for l_ in r[1] if txt(l_[0])]
     if not tks:
         print("Histórico: escreve pelo menos um ticker na coluna B (linhas 7 a 16).")
