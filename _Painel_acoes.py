@@ -601,7 +601,7 @@ def cor_cabecalho(grupo):
 
 
 # versão do script (sobe a cada alteração): aparece no topo de todas as folhas e na página do telemóvel
-VERSAO, DATA_VERSAO = "V127", "21/11/2026"
+VERSAO, DATA_VERSAO = "V130", "21/11/2026"
 TXT_VERSAO = f"{VERSAO} ({DATA_VERSAO})"
 
 
@@ -2029,6 +2029,11 @@ def pontuar(d, preco):
         p = 1
     else:
         p = 2
+    abaixo200 = False
+    if p >= 3 and p200 < 0 and not so_tend and not etf_mom:
+        # V130: compra só com o preço acima da média 200 (como quando só há a tendência). Barata face aos analistas
+        # / valor justo, mas a cair abaixo da média 200: «Compra …: esperar» em vez de comprar já a meio da queda
+        p, abaixo200 = 2, True
     if venda_prox and p > 2:
         p = 2
     lp = lp_travao(d)
@@ -2047,6 +2052,8 @@ def pontuar(d, preco):
         c.append(f"médias perto ({g:+.1%}) mas a afastar-se")
     elif 0 <= g < PROXIMO:
         c.append(f"médias perto ({g:+.1%}) mas a afastar-se para cima")
+    if abaixo200:
+        c.append(f"seria compra, mas o preço está abaixo da média 200 ({p200:+.1%}): esperar que recupere")
     if rede and preco < rede:
         c.append("preço abaixo da venda mínima (rede de segurança)" + (
             f", mas ainda acima da média 200 ({p200:+.1%}): queda brusca a vigiar, não se vende já (vende-se se "
@@ -3480,8 +3487,10 @@ def compra_espera(d):
     if nivel is None:
         return None
     pr = d.get("preco") if isinstance(d.get("preco"), (int, float)) else d.get("_preco_sinal")
-    m50, teto = d.get("mm50"), d.get("teto")
+    m50, teto, m200 = d.get("mm50"), d.get("teto"), d.get("mm200c")
     falta = []
+    if isinstance(pr, (int, float)) and isinstance(m200, (int, float)) and pr < m200:
+        falta.append("recuperar: preço acima da média 200")
     if isinstance(pr, (int, float)) and isinstance(m50, (int, float)) and pr < m50:
         falta.append("estabilizar: preço acima da média 50 dias")
     if isinstance(pr, (int, float)) and isinstance(teto, (int, float)) and teto > 0 and pr > teto:
@@ -7868,7 +7877,7 @@ def calcular_historico():
     if anos > 20:                                  # folha da V121 (dias de bolsa)
         anos = anos / 252
     anos = max(7 / 365.25, min(HIS_ANOS_MAX, anos))     # de 1 semana a 5 anos (p. ex. =4/52 para 4 semanas)
-    tks = [txt(l_[0]).upper() for l_ in r[1] if txt(l_[0])]
+    tks = list(dict.fromkeys(txt(l_[0]).upper() for l_ in r[1] if txt(l_[0])))   # sem repetidos
     if not tks:
         print("Histórico: escreve pelo menos um ticker na coluna B (linhas 7 a 16).")
         sys.exit(1)
@@ -7876,19 +7885,42 @@ def calcular_historico():
     ultima = get_column_letter(len(COLS))
     rr = ex.ops([{"op": "ler", "folha": idx, "rng": f"A{L0}:{ultima}{L0 + MAX_LINHAS}"} for idx in (1, 2)])
     todas = {txt(d.get("ticker")).upper(): d for i, tab in zip((1, 2), rr) for d in linhas_por_cabecalho(tab, i)}
-    linhas = [todas.get(t, {"ticker": t, "tipo": "Ação"}) for t in tks]
+    por_cod = {}                                   # a mesma empresa noutra bolsa (ex.: MU nos EUA e MTE.DE na tabela)
+    for d in todas.values():
+        for c_ in (txt(d.get("codigo")).upper(), txt(d.get("ticker")).upper().split(".")[0]):
+            if c_:
+                por_cod.setdefault(c_, d)
+    linhas = []
+    for t in tks:
+        if t in todas:
+            linhas.append(todas[t])
+        elif t.split(".")[0] in por_cod:           # da tabela: nome e decisão; cotações e moeda as deste ticker
+            d0 = por_cod[t.split(".")[0]]
+            todas[t] = d0
+            linhas.append({**d0, "ticker": t, "moeda": None})
+            print(f"   {t}: na tabela como {txt(d0.get('ticker'))} (decisão de hoje dessa linha)")
+        else:
+            linhas.append({"ticker": t, "tipo": "Ação"})
+            print(f"   {t}: não está nas folhas Ações / ETFs: o último ponto é o calculado (sem analistas)")
     moedas = {t: txt(d.get("moeda")) or "EUR" for t, d in zip(tks, linhas)}
     tipos = {t: txt(d.get("tipo")) or "Ação" for t, d in zip(tks, linhas)}
     hoje = date_.today()
     ini = hoje.replace(year=hoje.year - 12)
-    print(f"Histórico: cotações de {len(tks)} títulos (12 anos, para as retas) ...")
-    _sim_cotacoes_eur(tks, moedas, ini, hoje)
+    # o sinal dos ETFs compara a subida de 6 meses com a dos OUTROS ETFs da tabela: também são precisos
+    extra = ([t for t, d in todas.items() if txt(d.get("tipo")) == "ETF" and t not in tks]
+             if any(tipos[t] == "ETF" for t in tks) else [])
+    for t in extra:
+        moedas[t], tipos[t] = txt(todas[t].get("moeda")) or "EUR", "ETF"
+    print(f"Histórico: cotações de {len(tks)} títulos (12 anos, para as retas)"
+          + (f" e de mais {len(extra)} ETFs da tabela (para comparar a subida de 6 meses)" if extra else "") + " ...")
+    _sim_cotacoes_eur(tks + extra, moedas, ini, hoje)
     loc = _SIM_LOCAL.get("tab")
     cols = [t for t in tks if loc is not None and t in loc.columns]
     falta = [t for t in tks if t not in cols]
     if not cols:
         print("Histórico: não consegui as cotações destes tickers.")
         sys.exit(1)
+    loc_todos = loc[cols + [t for t in extra if t in loc.columns]]
     loc = loc[cols]
     idx_ = loc.dropna(how="all").index
     idx_ = idx_[idx_ >= idx_[-1] - pd.Timedelta(days=int(anos * 365.25))]
@@ -7904,11 +7936,17 @@ def calcular_historico():
         print(f"   SEC: {e}")
     print(f"   a calcular a decisão do painel em {len(dias)} pontos (um a cada {passo} dias de bolsa) ({len(sec)} com relatórios da SEC) ...")
     dec = {}
-    _sim_notas_painel(loc, tipos, dias, sec, None, dec)
+    _sim_notas_painel(loc_todos, tipos, dias, sec, None, dec)
     for t, d in zip(tks, linhas):                  # último ponto = a decisão da tabela (tem analistas e dados de hoje)
         dt_ = txt(d.get("decisao"))
-        if dt_ and dias and t in cols:
+        if t not in cols or not dias:
+            continue
+        calc = txt((dec.get((dias[-1], t)) or [""])[0])
+        if dt_:
             dec[(dias[-1], t)] = (dt_, d.get("nota_geral"), d.get("nivel_preco"))
+            print(f"   {t}: último ponto = decisão da tabela «{dt_[:60]}» (calculada sem analistas: «{calc[:60]}»)")
+        else:
+            print(f"   {t}: sem decisão na tabela; último ponto calculado «{calc[:60]}»")
     dados, resumo = [], {}
     NS = len(HIS_SER)
     for dia in dias:
